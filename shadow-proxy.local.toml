@@ -1,0 +1,28 @@
+# Local development config — use with: cargo run -- --config shadow-proxy.local.toml
+#
+# OTLP export is optional: if Phoenix isn't running, the proxy starts
+# with fmt-only tracing (warnings logged, no spans exported).
+#
+# Shadow dispatch is fire-and-forget: if LiteLLM isn't running, shadow
+# requests fail silently with warnings in logs.
+
+[server]
+listen_address = "0.0.0.0:3080"
+
+[primary]
+upstream_base_url = "https://api.anthropic.com"
+passthrough_auth = true
+timeout_secs = 300
+
+[shadow]
+litellm_url = "http://localhost:4000/v1/chat/completions"
+litellm_api_key = ""
+models = ["gemini-2.5-flash", "deepseek-v3.2", "glm-5", "gemini-3-pro"]
+timeout_secs = 120
+max_concurrent = 50
+
+[tracing]
+service_name = "shadow-proxy"
+otlp_endpoint = "http://localhost:4317"
+protocol = "grpc"
+log_level = "debug,shadow_proxy=trace"
