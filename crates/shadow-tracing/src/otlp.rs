@@ -34,15 +34,15 @@ impl Drop for TracingGuard {
 /// to ensure traces are flushed on shutdown.
 pub fn init_tracing(config: &TracingConfig) -> TracingGuard {
     // Build env filter
-    let env_filter = EnvFilter::try_new(&config.log_level)
-        .unwrap_or_else(|_| EnvFilter::new("info"));
+    let env_filter =
+        EnvFilter::try_new(&config.log_level).unwrap_or_else(|_| EnvFilter::new("info"));
 
     match try_init_with_otlp(config, env_filter) {
         Ok(guard) => guard,
         Err(e) => {
             // OTLP failed — fall back to fmt-only so the proxy still starts
-            let env_filter = EnvFilter::try_new(&config.log_level)
-                .unwrap_or_else(|_| EnvFilter::new("info"));
+            let env_filter =
+                EnvFilter::try_new(&config.log_level).unwrap_or_else(|_| EnvFilter::new("info"));
 
             tracing_subscriber::registry()
                 .with(
@@ -93,10 +93,7 @@ fn try_init_with_otlp(config: &TracingConfig, env_filter: EnvFilter) -> Result<T
 
     // Assemble the tracing subscriber
     tracing_subscriber::registry()
-        .with(
-            tracing_opentelemetry::layer()
-                .with_tracer(tracer),
-        )
+        .with(tracing_opentelemetry::layer().with_tracer(tracer))
         .with(
             tracing_subscriber::fmt::layer()
                 .with_target(true)
@@ -112,5 +109,7 @@ fn try_init_with_otlp(config: &TracingConfig, env_filter: EnvFilter) -> Result<T
         "OpenTelemetry OTLP tracing initialized"
     );
 
-    Ok(TracingGuard { provider: Some(provider) })
+    Ok(TracingGuard {
+        provider: Some(provider),
+    })
 }

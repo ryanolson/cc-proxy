@@ -1,0 +1,6 @@
+target/
+.git/
+.github/
+*.local.toml
+.gitignore
+CLAUDE.md
