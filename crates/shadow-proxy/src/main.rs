@@ -29,22 +29,25 @@ fn main() -> anyhow::Result<()> {
     // Load configuration
     let config = ProxyConfig::load(&config_path)?;
 
-    // Initialize tracing (OTLP export is optional — falls back to fmt-only)
-    let _tracing_guard = shadow_tracing::init_tracing(&config.tracing);
-
-    tracing::info!(
-        config_path = %config_path,
-        listen_address = %config.server.listen_address,
-        upstream_base = %config.primary.upstream_base_url,
-        shadow_models = ?config.shadow.models,
-        "Starting shadow-proxy"
-    );
-
-    // Build the tokio runtime and run
-    tokio::runtime::Builder::new_multi_thread()
+    // Build the tokio runtime first — tonic gRPC exporter needs a reactor context
+    let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
-        .build()?
-        .block_on(run(config))
+        .build()?;
+
+    runtime.block_on(async {
+        // Initialize tracing (OTLP export is optional — falls back to fmt-only)
+        let _tracing_guard = shadow_tracing::init_tracing(&config.tracing);
+
+        tracing::info!(
+            config_path = %config_path,
+            listen_address = %config.server.listen_address,
+            upstream_base = %config.primary.upstream_base_url,
+            shadow_models = ?config.shadow.models,
+            "Starting shadow-proxy"
+        );
+
+        run(config).await
+    })
 }
 
 async fn run(config: ProxyConfig) -> anyhow::Result<()> {
