@@ -12,6 +12,7 @@ use tracing::Instrument;
 
 use crate::config::ProxyConfig;
 use crate::convert::types::AnthropicCreateMessageRequest;
+use crate::openinference;
 use crate::proxy::correlation;
 use crate::proxy::primary;
 use crate::proxy::shadow::ShadowDispatcher;
@@ -69,6 +70,12 @@ async fn handle_messages(
 
     let span = shadow_tracing::proxy_request_span!(&correlation_id, &model);
 
+    // Set OpenInference request attributes on the root span so Phoenix
+    // shows the trace as kind=LLM with visible I/O at the top level.
+    if let Some(ref req) = parsed {
+        openinference::set_request_attributes(&span, req);
+    }
+
     async {
         // Fire shadow requests (non-blocking, fire-and-forget)
         state.shadow_dispatcher.dispatch_all(&body, &correlation_id);
@@ -76,33 +83,32 @@ async fn handle_messages(
         // Forward to Anthropic (blocking, returns the streaming response)
         let url = format!("{}/v1/messages", state.config.primary.upstream_base_url);
 
-        // If we have the parsed request, pass it for OpenInference attributes.
-        // Otherwise, construct a minimal fallback so we can still forward.
-        match parsed {
-            Some(ref req) => {
-                primary::forward_to_anthropic(
-                    &state.primary_client,
-                    &url,
-                    &headers,
-                    body,
-                    &correlation_id,
-                    is_streaming,
-                    req,
-                )
-                .await
-            }
-            None => {
-                // Fallback: forward without OpenInference attributes
-                primary::forward_raw(
-                    &state.primary_client,
-                    axum::http::Method::POST,
-                    &url,
-                    &headers,
-                    body,
-                    &correlation_id,
-                )
-                .await
-            }
+        // Pass the root span so TeeBody can set response attributes on it
+        // when streaming completes, keeping the span open until then.
+        let root_span = tracing::Span::current();
+
+        if parsed.is_some() {
+            primary::forward_to_anthropic(
+                &state.primary_client,
+                &url,
+                &headers,
+                body,
+                &correlation_id,
+                is_streaming,
+                root_span,
+            )
+            .await
+        } else {
+            // Fallback: forward without OpenInference attributes
+            primary::forward_raw(
+                &state.primary_client,
+                axum::http::Method::POST,
+                &url,
+                &headers,
+                body,
+                &correlation_id,
+            )
+            .await
         }
     }
     .instrument(span)
