@@ -2,14 +2,14 @@
 //!
 //! Sets standard OpenInference attributes on OTel spans so Phoenix renders them
 //! as proper LLM traces with visible I/O, token counts, and tool calls.
+//!
+//! All request parsing uses `serde_json::Value` to be resilient to unknown
+//! content block types (thinking, citations, server_tool_use, etc.) that
+//! would cause typed deserialization to fail.
 
 use opentelemetry::{Key, Value};
 use tracing::Span;
 use tracing_opentelemetry::OpenTelemetrySpanExt;
-
-use crate::convert::types::{
-    AnthropicContentBlock, AnthropicCreateMessageRequest, AnthropicMessageContent, AnthropicRole,
-};
 
 /// Helper to set a string attribute on a span.
 fn set_str(span: &Span, key: impl Into<Key>, value: impl Into<String>) {
@@ -21,42 +21,41 @@ fn set_i64(span: &Span, key: impl Into<Key>, value: i64) {
     span.set_attribute(key, Value::I64(value));
 }
 
-/// Set OpenInference request attributes on the current span.
+/// Set OpenInference request attributes on the root span from raw JSON.
 ///
-/// Called before sending to Anthropic with the parsed request body.
-pub fn set_request_attributes(span: &Span, req: &AnthropicCreateMessageRequest) {
+/// Extracts model, messages, tools, and invocation parameters from the
+/// request body Value. Unknown fields/block types are silently skipped.
+pub fn set_request_attributes(span: &Span, req: &serde_json::Value) {
     set_str(span, "openinference.span.kind", "LLM");
     set_str(span, "llm.system", "anthropic");
-    set_str(span, "llm.model_name", req.model.clone());
 
-    // input.value = JSON string of messages
-    if let Ok(messages_json) = serde_json::to_string(&req.messages) {
-        set_str(span, "input.value", messages_json);
+    if let Some(model) = req.get("model").and_then(|v| v.as_str()) {
+        set_str(span, "llm.model_name", model);
+    }
+
+    // input.value = JSON string of messages array
+    if let Some(messages) = req.get("messages") {
+        if let Ok(messages_json) = serde_json::to_string(messages) {
+            set_str(span, "input.value", messages_json);
+        }
     }
 
     // llm.invocation_parameters
     let mut params = serde_json::Map::new();
-    params.insert(
-        "max_tokens".to_string(),
-        serde_json::Value::Number(req.max_tokens.into()),
-    );
-    if let Some(temp) = req.temperature {
-        if let Some(n) = serde_json::Number::from_f64(temp as f64) {
-            params.insert("temperature".to_string(), serde_json::Value::Number(n));
-        }
+    if let Some(v) = req.get("max_tokens") {
+        params.insert("max_tokens".to_string(), v.clone());
     }
-    if let Some(top_p) = req.top_p {
-        if let Some(n) = serde_json::Number::from_f64(top_p as f64) {
-            params.insert("top_p".to_string(), serde_json::Value::Number(n));
-        }
+    if let Some(v) = req.get("temperature") {
+        params.insert("temperature".to_string(), v.clone());
     }
-    if let Some(top_k) = req.top_k {
-        params.insert("top_k".to_string(), serde_json::Value::Number(top_k.into()));
+    if let Some(v) = req.get("top_p") {
+        params.insert("top_p".to_string(), v.clone());
     }
-    if let Some(ref stop) = req.stop_sequences {
-        if let Ok(v) = serde_json::to_value(stop) {
-            params.insert("stop_sequences".to_string(), v);
-        }
+    if let Some(v) = req.get("top_k") {
+        params.insert("top_k".to_string(), v.clone());
+    }
+    if let Some(v) = req.get("stop_sequences") {
+        params.insert("stop_sequences".to_string(), v.clone());
     }
     if let Ok(params_str) = serde_json::to_string(&params) {
         set_str(span, "llm.invocation_parameters", params_str);
@@ -65,63 +64,90 @@ pub fn set_request_attributes(span: &Span, req: &AnthropicCreateMessageRequest) 
     // Flatten input messages with system prompt as index 0
     let mut msg_idx: usize = 0;
 
-    if let Some(ref system) = req.system {
-        let prefix = format!("llm.input_messages.{msg_idx}.message");
-        set_str(span, format!("{prefix}.role"), "system");
-        set_str(span, format!("{prefix}.content"), system.clone());
-        msg_idx += 1;
+    // System prompt can be a string or an array of {type: "text", text: "..."} blocks
+    if let Some(system) = req.get("system") {
+        let system_text = if let Some(s) = system.as_str() {
+            Some(s.to_string())
+        } else if let Some(arr) = system.as_array() {
+            let parts: Vec<&str> = arr
+                .iter()
+                .filter_map(|b| b.get("text").and_then(|t| t.as_str()))
+                .collect();
+            if parts.is_empty() {
+                None
+            } else {
+                Some(parts.join("\n"))
+            }
+        } else {
+            None
+        };
+
+        if let Some(text) = system_text {
+            let prefix = format!("llm.input_messages.{msg_idx}.message");
+            set_str(span, format!("{prefix}.role"), "system");
+            set_str(span, format!("{prefix}.content"), text);
+            msg_idx += 1;
+        }
     }
 
-    for msg in &req.messages {
-        let prefix = format!("llm.input_messages.{msg_idx}.message");
-        let role = match msg.role {
-            AnthropicRole::User => "user",
-            AnthropicRole::Assistant => "assistant",
-        };
-        set_str(span, format!("{prefix}.role"), role);
+    if let Some(messages) = req.get("messages").and_then(|v| v.as_array()) {
+        for msg in messages {
+            let prefix = format!("llm.input_messages.{msg_idx}.message");
 
-        match &msg.content {
-            AnthropicMessageContent::Text { content } => {
-                set_str(span, format!("{prefix}.content"), content.clone());
+            if let Some(role) = msg.get("role").and_then(|v| v.as_str()) {
+                set_str(span, format!("{prefix}.role"), role);
             }
-            AnthropicMessageContent::Blocks { content } => {
-                let mut text_parts = Vec::new();
-                let mut tool_idx: usize = 0;
 
-                for block in content {
-                    match block {
-                        AnthropicContentBlock::Text { text } => {
-                            text_parts.push(text.as_str());
-                        }
-                        AnthropicContentBlock::ToolUse { name, input, .. } => {
-                            let tc_prefix =
-                                format!("{prefix}.tool_calls.{tool_idx}.tool_call.function");
-                            set_str(span, format!("{tc_prefix}.name"), name.clone());
-                            if let Ok(args) = serde_json::to_string(input) {
-                                set_str(span, format!("{tc_prefix}.arguments"), args);
+            // Content: either a string or an array of content blocks
+            if let Some(content) = msg.get("content") {
+                if let Some(text) = content.as_str() {
+                    set_str(span, format!("{prefix}.content"), text);
+                } else if let Some(blocks) = content.as_array() {
+                    let mut text_parts = Vec::new();
+                    let mut tool_idx: usize = 0;
+
+                    for block in blocks {
+                        match block.get("type").and_then(|v| v.as_str()) {
+                            Some("text") => {
+                                if let Some(t) = block.get("text").and_then(|v| v.as_str()) {
+                                    text_parts.push(t);
+                                }
                             }
-                            tool_idx += 1;
+                            Some("tool_use") => {
+                                let tc_prefix =
+                                    format!("{prefix}.tool_calls.{tool_idx}.tool_call.function");
+                                if let Some(name) = block.get("name").and_then(|v| v.as_str()) {
+                                    set_str(span, format!("{tc_prefix}.name"), name);
+                                }
+                                if let Some(input) = block.get("input") {
+                                    if let Ok(args) = serde_json::to_string(input) {
+                                        set_str(span, format!("{tc_prefix}.arguments"), args);
+                                    }
+                                }
+                                tool_idx += 1;
+                            }
+                            Some("tool_result") => {
+                                if let Some(c) = block.get("content").and_then(|v| v.as_str()) {
+                                    text_parts.push(c);
+                                }
+                            }
+                            // Skip unknown block types (thinking, citations, etc.)
+                            _ => {}
                         }
-                        AnthropicContentBlock::ToolResult {
-                            content: Some(c), ..
-                        } => {
-                            text_parts.push(c.as_str());
-                        }
-                        _ => {}
+                    }
+
+                    if !text_parts.is_empty() {
+                        set_str(span, format!("{prefix}.content"), text_parts.join("\n"));
                     }
                 }
-
-                if !text_parts.is_empty() {
-                    set_str(span, format!("{prefix}.content"), text_parts.join("\n"));
-                }
             }
-        }
 
-        msg_idx += 1;
+            msg_idx += 1;
+        }
     }
 
     // llm.tools.N.tool.json_schema
-    if let Some(ref tools) = req.tools {
+    if let Some(tools) = req.get("tools").and_then(|v| v.as_array()) {
         for (i, tool) in tools.iter().enumerate() {
             if let Ok(schema_str) = serde_json::to_string(tool) {
                 set_str(span, format!("llm.tools.{i}.tool.json_schema"), schema_str);
@@ -404,7 +430,50 @@ mod tests {
             "top_p": 0.9,
             "stream": true
         }"#;
-        let req: AnthropicCreateMessageRequest = serde_json::from_str(json).unwrap();
+        let req: serde_json::Value = serde_json::from_str(json).unwrap();
+        let span = tracing::info_span!("test");
+        set_request_attributes(&span, &req);
+    }
+
+    #[test]
+    fn test_request_with_unknown_content_blocks() {
+        // Simulate a real Claude Code request with thinking blocks, citations, etc.
+        let json = r#"{
+            "model": "claude-opus-4-6",
+            "max_tokens": 16384,
+            "system": [{"type": "text", "text": "You are helpful."}],
+            "messages": [
+                {"role": "user", "content": "Hello"},
+                {"role": "assistant", "content": [
+                    {"type": "thinking", "thinking": "Let me consider..."},
+                    {"type": "text", "text": "Hi!"},
+                    {"type": "server_tool_use", "id": "st1", "name": "web_search", "input": {}}
+                ]},
+                {"role": "user", "content": [
+                    {"type": "tool_result", "tool_use_id": "st1", "content": "results here"},
+                    {"type": "text", "text": "What did you find?"}
+                ]}
+            ],
+            "stream": true
+        }"#;
+        let req: serde_json::Value = serde_json::from_str(json).unwrap();
+        let span = tracing::info_span!("test");
+        // Should not panic — unknown block types are skipped
+        set_request_attributes(&span, &req);
+    }
+
+    #[test]
+    fn test_system_prompt_as_blocks() {
+        let json = r#"{
+            "model": "test",
+            "max_tokens": 100,
+            "system": [
+                {"type": "text", "text": "Block one"},
+                {"type": "text", "text": "Block two"}
+            ],
+            "messages": [{"role": "user", "content": "Hi"}]
+        }"#;
+        let req: serde_json::Value = serde_json::from_str(json).unwrap();
         let span = tracing::info_span!("test");
         set_request_attributes(&span, &req);
     }

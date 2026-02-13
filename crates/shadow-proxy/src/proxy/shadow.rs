@@ -12,7 +12,7 @@ use tracing::Instrument;
 use super::correlation::CORRELATION_HEADER;
 use crate::config::ShadowConfig;
 use crate::convert::anthropic_to_openai::anthropic_to_openai;
-use crate::convert::types::{AnthropicCreateMessageRequest, AnthropicRole};
+use crate::convert::types::AnthropicCreateMessageRequest;
 
 /// Dispatches shadow requests to configured models via LiteLLM.
 #[derive(Clone)]
@@ -41,24 +41,27 @@ impl ShadowDispatcher {
     /// Quota-check requests (single short user message, no tools, low max_tokens)
     /// are skipped to avoid noisy shadow traces.
     pub fn dispatch_all(&self, request_bytes: &[u8], correlation_id: &str) {
-        // Parse the request body once
-        let anthropic_req: AnthropicCreateMessageRequest =
-            match serde_json::from_slice(request_bytes) {
-                Ok(req) => req,
-                Err(e) => {
-                    tracing::warn!(error = %e, "Failed to parse request for shadow dispatch");
-                    return;
-                }
-            };
-
-        // Skip quota-check requests: single user message, no tools, low max_tokens
-        if Self::is_quota_check(&anthropic_req) {
-            tracing::debug!(
-                correlation_id = %correlation_id,
-                "Skipping shadow dispatch for quota-check request"
-            );
-            return;
+        // Quick quota-check using untyped JSON (resilient to unknown content blocks)
+        if let Ok(value) = serde_json::from_slice::<serde_json::Value>(request_bytes) {
+            if Self::is_quota_check(&value) {
+                tracing::debug!(
+                    correlation_id = %correlation_id,
+                    "Skipping shadow dispatch for quota-check request"
+                );
+                return;
+            }
         }
+
+        // Parse as typed struct for OpenAI conversion (may fail on unknown block types)
+        let anthropic_req: AnthropicCreateMessageRequest = match serde_json::from_slice(
+            request_bytes,
+        ) {
+            Ok(req) => req,
+            Err(e) => {
+                tracing::debug!(error = %e, "Failed to parse request for shadow dispatch (likely unknown content blocks)");
+                return;
+            }
+        };
 
         // Convert to OpenAI format once
         let openai_body = match anthropic_to_openai(&anthropic_req) {
@@ -203,13 +206,25 @@ impl ShadowDispatcher {
     }
 
     /// Returns true if the request looks like a Claude Code quota check:
-    /// - Exactly one message with role `User`
+    /// - Exactly one message with role `user`
     /// - No tools defined
     /// - `max_tokens` <= 32
-    fn is_quota_check(req: &AnthropicCreateMessageRequest) -> bool {
-        req.messages.len() == 1
-            && req.messages[0].role == AnthropicRole::User
-            && req.tools.as_ref().is_none_or(|t| t.is_empty())
-            && req.max_tokens <= 32
+    fn is_quota_check(req: &serde_json::Value) -> bool {
+        let messages = match req.get("messages").and_then(|v| v.as_array()) {
+            Some(m) => m,
+            None => return false,
+        };
+        let max_tokens = req
+            .get("max_tokens")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(u64::MAX);
+        let has_tools = req
+            .get("tools")
+            .and_then(|v| v.as_array())
+            .is_some_and(|t| !t.is_empty());
+        let single_user_msg =
+            messages.len() == 1 && messages[0].get("role").and_then(|v| v.as_str()) == Some("user");
+
+        single_user_msg && !has_tools && max_tokens <= 32
     }
 }
