@@ -19,7 +19,6 @@ use futures_core::Stream;
 use tracing::Instrument;
 
 use super::correlation::CORRELATION_HEADER;
-use crate::convert::types::AnthropicCreateMessageRequest;
 use crate::openinference;
 
 /// Headers that should NOT be forwarded (hop-by-hop headers).
@@ -73,8 +72,9 @@ impl Stream for TeeBody {
 /// Forward the raw request body to Anthropic and stream the response back.
 ///
 /// Used by the `/v1/messages` handler. The caller constructs the full URL
-/// from `upstream_base_url`. OpenInference attributes are set on the span for
-/// Phoenix/Arize LLM trace rendering.
+/// from `upstream_base_url`. The `root_span` is the parent `proxy_request`
+/// span — TeeBody holds a clone of it so OpenInference response attributes
+/// are set on the root trace (keeping it open until streaming completes).
 pub async fn forward_to_anthropic(
     client: &reqwest::Client,
     url: &str,
@@ -82,16 +82,12 @@ pub async fn forward_to_anthropic(
     body: Bytes,
     correlation_id: &str,
     is_streaming: bool,
-    parsed_request: &AnthropicCreateMessageRequest,
+    root_span: tracing::Span,
 ) -> Response {
     let span = shadow_tracing::primary_forward_span!(correlation_id);
-
-    // Set OpenInference request attributes before sending
-    openinference::set_request_attributes(&span, parsed_request);
-
     let start = Instant::now();
 
-    let response = async {
+    async {
         // Build the upstream request
         let mut req_builder = client
             .post(url)
@@ -115,12 +111,16 @@ pub async fn forward_to_anthropic(
         // Send the request
         let upstream_result = req_builder.send().await;
 
-        build_response(upstream_result, start, correlation_id, is_streaming, &span)
+        build_response(
+            upstream_result,
+            start,
+            correlation_id,
+            is_streaming,
+            &root_span,
+        )
     }
-    .instrument(span.clone())
-    .await;
-
-    response
+    .instrument(span)
+    .await
 }
 
 /// Forward any request (any HTTP method) to upstream and stream the response back.
