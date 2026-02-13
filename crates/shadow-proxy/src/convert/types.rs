@@ -1,6 +1,13 @@
 //! Anthropic Messages API types.
 //!
 //! Extracted from dynamo-llm's anthropic types for standalone use.
+//!
+//! NOTE: These types are currently unused at runtime — all parsing uses
+//! `serde_json::Value` for resilience to unknown content block types.
+//! Kept as documentation of known Anthropic protocol structures and for
+//! potential future typed validation.
+
+#![allow(dead_code)]
 
 use serde::{Deserialize, Serialize};
 
@@ -104,6 +111,10 @@ pub enum AnthropicMessageContent {
 }
 
 /// A single content block within a message.
+///
+/// Unknown block types (e.g. `thinking`, `server_tool_use`, `citations`) are
+/// captured by the `Other` variant so deserialization never fails on new or
+/// unexpected Anthropic content block types.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
 pub enum AnthropicContentBlock {
@@ -125,6 +136,9 @@ pub enum AnthropicContentBlock {
         #[serde(skip_serializing_if = "Option::is_none")]
         is_error: Option<bool>,
     },
+    /// Catch-all for unknown content block types.
+    #[serde(other)]
+    Other,
 }
 
 /// Image source for image content blocks.
@@ -223,6 +237,34 @@ mod tests {
         match &req.messages[0].content {
             AnthropicMessageContent::Blocks { content } => {
                 assert_eq!(content.len(), 2);
+            }
+            _ => panic!("expected blocks content"),
+        }
+    }
+
+    #[test]
+    fn test_deserialize_unknown_content_blocks() {
+        let json = r#"{
+            "model": "test",
+            "max_tokens": 100,
+            "messages": [{
+                "role": "assistant",
+                "content": [
+                    {"type": "thinking", "thinking": "let me think..."},
+                    {"type": "text", "text": "Here is my answer"},
+                    {"type": "server_tool_use", "id": "st_1", "name": "web_search"},
+                    {"type": "citations", "citations": []}
+                ]
+            }]
+        }"#;
+        let req: AnthropicCreateMessageRequest = serde_json::from_str(json).unwrap();
+        match &req.messages[0].content {
+            AnthropicMessageContent::Blocks { content } => {
+                assert_eq!(content.len(), 4);
+                assert!(matches!(&content[0], AnthropicContentBlock::Other));
+                assert!(matches!(&content[1], AnthropicContentBlock::Text { .. }));
+                assert!(matches!(&content[2], AnthropicContentBlock::Other));
+                assert!(matches!(&content[3], AnthropicContentBlock::Other));
             }
             _ => panic!("expected blocks content"),
         }

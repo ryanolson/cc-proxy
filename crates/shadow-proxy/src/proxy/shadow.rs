@@ -2,6 +2,11 @@
 //!
 //! Fires converted requests at shadow models via LiteLLM. All shadow requests
 //! are fire-and-forget: failures never affect the primary path.
+//!
+//! All parsing uses `serde_json::Value` — no typed Anthropic structs. This
+//! makes shadow dispatch resilient to unknown content block types. Unknown
+//! types are logged at info level in the conversion layer so they can be
+//! identified and protocol support added incrementally.
 
 use std::sync::Arc;
 use std::time::Instant;
@@ -12,7 +17,6 @@ use tracing::Instrument;
 use super::correlation::CORRELATION_HEADER;
 use crate::config::ShadowConfig;
 use crate::convert::anthropic_to_openai::anthropic_to_openai;
-use crate::convert::types::AnthropicCreateMessageRequest;
 
 /// Dispatches shadow requests to configured models via LiteLLM.
 #[derive(Clone)]
@@ -41,30 +45,26 @@ impl ShadowDispatcher {
     /// Quota-check requests (single short user message, no tools, low max_tokens)
     /// are skipped to avoid noisy shadow traces.
     pub fn dispatch_all(&self, request_bytes: &[u8], correlation_id: &str) {
-        // Quick quota-check using untyped JSON (resilient to unknown content blocks)
-        if let Ok(value) = serde_json::from_slice::<serde_json::Value>(request_bytes) {
-            if Self::is_quota_check(&value) {
-                tracing::debug!(
-                    correlation_id = %correlation_id,
-                    "Skipping shadow dispatch for quota-check request"
-                );
-                return;
-            }
-        }
-
-        // Parse as typed struct for OpenAI conversion (may fail on unknown block types)
-        let anthropic_req: AnthropicCreateMessageRequest = match serde_json::from_slice(
-            request_bytes,
-        ) {
-            Ok(req) => req,
+        // Parse as untyped JSON — resilient to unknown content block types
+        let value: serde_json::Value = match serde_json::from_slice(request_bytes) {
+            Ok(v) => v,
             Err(e) => {
-                tracing::debug!(error = %e, "Failed to parse request for shadow dispatch (likely unknown content blocks)");
+                tracing::warn!(error = %e, "Failed to parse request JSON for shadow dispatch");
                 return;
             }
         };
 
-        // Convert to OpenAI format once
-        let openai_body = match anthropic_to_openai(&anthropic_req) {
+        // Skip quota-check requests
+        if Self::is_quota_check(&value) {
+            tracing::debug!(
+                correlation_id = %correlation_id,
+                "Skipping shadow dispatch for quota-check request"
+            );
+            return;
+        }
+
+        // Convert to OpenAI format once (from Value — never fails on unknown blocks)
+        let openai_body = match anthropic_to_openai(&value) {
             Ok(body) => body,
             Err(e) => {
                 tracing::warn!(error = %e, "Failed to convert request to OpenAI format");
@@ -200,8 +200,6 @@ impl ShadowDispatcher {
             });
         }
 
-        // Fix: the openai_body variable was modified by reference in the loop,
-        // but we clone it each time. Suppress the unused warning.
         drop(openai_body);
     }
 
