@@ -71,14 +71,8 @@ async fn handle_messages(
 
         // Forward to Anthropic (blocking, returns the streaming response)
         let url = format!("{}/v1/messages", state.config.primary.upstream_base_url);
-        primary::forward_to_anthropic(
-            &state.primary_client,
-            &url,
-            &headers,
-            body,
-            &correlation_id,
-        )
-        .await
+        primary::forward_to_anthropic(&state.primary_client, &url, &headers, body, &correlation_id)
+            .await
     }
     .instrument(span)
     .await
@@ -88,15 +82,16 @@ async fn handle_messages(
 ///
 /// Forwards the request to Anthropic unchanged (no shadow dispatch).
 /// Supports all HTTP methods (GET, POST, DELETE, etc.).
-async fn handle_fallback(
-    State(state): State<Arc<AppState>>,
-    request: Request,
-) -> Response {
+async fn handle_fallback(State(state): State<Arc<AppState>>, request: Request) -> Response {
     let correlation_id = correlation::generate_id();
 
     let method = request.method().clone();
     let path = request.uri().path().to_string();
-    let query = request.uri().query().map(|q| format!("?{q}")).unwrap_or_default();
+    let query = request
+        .uri()
+        .query()
+        .map(|q| format!("?{q}"))
+        .unwrap_or_default();
     let url = format!("{}{path}{query}", state.config.primary.upstream_base_url);
 
     let headers = request.headers().clone();

@@ -9,10 +9,10 @@ use std::time::Instant;
 use tokio::sync::Semaphore;
 use tracing::Instrument;
 
+use super::correlation::CORRELATION_HEADER;
 use crate::config::ShadowConfig;
 use crate::convert::anthropic_to_openai::anthropic_to_openai;
 use crate::convert::types::AnthropicCreateMessageRequest;
-use super::correlation::CORRELATION_HEADER;
 
 /// Dispatches shadow requests to configured models via LiteLLM.
 #[derive(Clone)]
@@ -39,13 +39,14 @@ impl ShadowDispatcher {
     /// Failures are logged as warnings and never propagated.
     pub fn dispatch_all(&self, request_bytes: &[u8], correlation_id: &str) {
         // Parse the request body once
-        let anthropic_req: AnthropicCreateMessageRequest = match serde_json::from_slice(request_bytes) {
-            Ok(req) => req,
-            Err(e) => {
-                tracing::warn!(error = %e, "Failed to parse request for shadow dispatch");
-                return;
-            }
-        };
+        let anthropic_req: AnthropicCreateMessageRequest =
+            match serde_json::from_slice(request_bytes) {
+                Ok(req) => req,
+                Err(e) => {
+                    tracing::warn!(error = %e, "Failed to parse request for shadow dispatch");
+                    return;
+                }
+            };
 
         // Convert to OpenAI format once
         let openai_body = match anthropic_to_openai(&anthropic_req) {
