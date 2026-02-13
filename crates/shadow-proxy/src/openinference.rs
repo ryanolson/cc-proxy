@@ -51,10 +51,7 @@ pub fn set_request_attributes(span: &Span, req: &AnthropicCreateMessageRequest) 
         }
     }
     if let Some(top_k) = req.top_k {
-        params.insert(
-            "top_k".to_string(),
-            serde_json::Value::Number(top_k.into()),
-        );
+        params.insert("top_k".to_string(), serde_json::Value::Number(top_k.into()));
     }
     if let Some(ref stop) = req.stop_sequences {
         if let Ok(v) = serde_json::to_value(stop) {
@@ -97,9 +94,8 @@ pub fn set_request_attributes(span: &Span, req: &AnthropicCreateMessageRequest) 
                             text_parts.push(text.as_str());
                         }
                         AnthropicContentBlock::ToolUse { name, input, .. } => {
-                            let tc_prefix = format!(
-                                "{prefix}.tool_calls.{tool_idx}.tool_call.function"
-                            );
+                            let tc_prefix =
+                                format!("{prefix}.tool_calls.{tool_idx}.tool_call.function");
                             set_str(span, format!("{tc_prefix}.name"), name.clone());
                             if let Ok(args) = serde_json::to_string(input) {
                                 set_str(span, format!("{tc_prefix}.arguments"), args);
@@ -305,9 +301,7 @@ fn set_streaming_response_attributes(span: &Span, response_bytes: &[u8]) {
                         if let Some(delta) = data.get("delta") {
                             match delta.get("type").and_then(|v| v.as_str()) {
                                 Some("text_delta") => {
-                                    if let Some(t) =
-                                        delta.get("text").and_then(|v| v.as_str())
-                                    {
+                                    if let Some(t) = delta.get("text").and_then(|v| v.as_str()) {
                                         block.text.push_str(t);
                                     }
                                 }
