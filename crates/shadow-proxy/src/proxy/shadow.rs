@@ -124,6 +124,17 @@ impl ShadowDispatcher {
                         }
                     };
 
+                    // Record the request body and message count on the span
+                    // so we can verify the full history is being sent.
+                    let msg_count = body["messages"]
+                        .as_array()
+                        .map(|a| a.len())
+                        .unwrap_or(0);
+                    tracing::Span::current()
+                        .record("shadow.request_message_count", msg_count);
+                    tracing::Span::current()
+                        .record("shadow.request_body", &body_str);
+
                     req_builder = req_builder.body(body_str);
 
                     // Send with timeout
