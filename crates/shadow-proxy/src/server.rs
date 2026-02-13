@@ -11,7 +11,6 @@ use bytes::Bytes;
 use tracing::Instrument;
 
 use crate::config::ProxyConfig;
-use crate::convert::types::AnthropicCreateMessageRequest;
 use crate::openinference;
 use crate::proxy::correlation;
 use crate::proxy::primary;
@@ -59,14 +58,19 @@ async fn handle_messages(
 ) -> Response {
     let correlation_id = correlation::generate_id();
 
-    // Parse the request body once for model name, stream flag, and OpenInference attributes
-    let parsed: Option<AnthropicCreateMessageRequest> = serde_json::from_slice(&body).ok();
+    // Parse the request body as untyped JSON — resilient to unknown content
+    // block types (thinking, citations, server_tool_use, etc.)
+    let parsed: Option<serde_json::Value> = serde_json::from_slice(&body).ok();
 
     let model = parsed
         .as_ref()
-        .map(|r| r.model.clone())
-        .unwrap_or_else(|| "unknown".to_string());
-    let is_streaming = parsed.as_ref().is_some_and(|r| r.stream);
+        .and_then(|v| v.get("model").and_then(|m| m.as_str()))
+        .unwrap_or("unknown")
+        .to_string();
+    let is_streaming = parsed
+        .as_ref()
+        .and_then(|v| v.get("stream").and_then(|s| s.as_bool()))
+        .unwrap_or(false);
 
     let span = shadow_tracing::proxy_request_span!(&correlation_id, &model);
 
@@ -87,29 +91,16 @@ async fn handle_messages(
         // when streaming completes, keeping the span open until then.
         let root_span = tracing::Span::current();
 
-        if parsed.is_some() {
-            primary::forward_to_anthropic(
-                &state.primary_client,
-                &url,
-                &headers,
-                body,
-                &correlation_id,
-                is_streaming,
-                root_span,
-            )
-            .await
-        } else {
-            // Fallback: forward without OpenInference attributes
-            primary::forward_raw(
-                &state.primary_client,
-                axum::http::Method::POST,
-                &url,
-                &headers,
-                body,
-                &correlation_id,
-            )
-            .await
-        }
+        primary::forward_to_anthropic(
+            &state.primary_client,
+            &url,
+            &headers,
+            body,
+            &correlation_id,
+            is_streaming,
+            root_span,
+        )
+        .await
     }
     .instrument(span)
     .await
