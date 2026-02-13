@@ -40,6 +40,8 @@ macro_rules! shadow_request_span {
             input_tokens = tracing::field::Empty,
             output_tokens = tracing::field::Empty,
             status = tracing::field::Empty,
+            shadow.request_body = tracing::field::Empty,
+            shadow.request_message_count = tracing::field::Empty,
             shadow.response_body = tracing::field::Empty,
         )
     };
