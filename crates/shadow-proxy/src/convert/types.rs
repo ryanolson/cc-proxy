@@ -2,12 +2,9 @@
 //!
 //! Extracted from dynamo-llm's anthropic types for standalone use.
 //!
-//! NOTE: These types are currently unused at runtime — all parsing uses
-//! `serde_json::Value` for resilience to unknown content block types.
-//! Kept as documentation of known Anthropic protocol structures and for
-//! potential future typed validation.
-
-#![allow(dead_code)]
+//! Used at runtime by the validation module (`convert::validation`) which
+//! attempts typed deserialization as a sidecar to detect Anthropic type drift.
+//! The primary conversion path still uses `serde_json::Value` for resilience.
 
 use serde::{Deserialize, Serialize};
 

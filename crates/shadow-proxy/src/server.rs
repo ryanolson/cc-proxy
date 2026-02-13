@@ -78,6 +78,11 @@ async fn handle_messages(
     // shows the trace as kind=LLM with visible I/O at the top level.
     if let Some(ref req) = parsed {
         openinference::set_request_attributes(&span, req);
+
+        // Typed validation sidecar: detect Anthropic type drift and emit
+        // structured OTLP attributes queryable in Phoenix.
+        let report = crate::convert::validation::validate_request(&body, req);
+        report.emit(&span);
     }
 
     async {
