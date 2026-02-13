@@ -12,7 +12,7 @@ use tracing::Instrument;
 use super::correlation::CORRELATION_HEADER;
 use crate::config::ShadowConfig;
 use crate::convert::anthropic_to_openai::anthropic_to_openai;
-use crate::convert::types::AnthropicCreateMessageRequest;
+use crate::convert::types::{AnthropicCreateMessageRequest, AnthropicRole};
 
 /// Dispatches shadow requests to configured models via LiteLLM.
 #[derive(Clone)]
@@ -37,6 +37,9 @@ impl ShadowDispatcher {
     ///
     /// Each model gets its own tokio task. Semaphore limits concurrency.
     /// Failures are logged as warnings and never propagated.
+    ///
+    /// Quota-check requests (single short user message, no tools, low max_tokens)
+    /// are skipped to avoid noisy shadow traces.
     pub fn dispatch_all(&self, request_bytes: &[u8], correlation_id: &str) {
         // Parse the request body once
         let anthropic_req: AnthropicCreateMessageRequest =
@@ -47,6 +50,15 @@ impl ShadowDispatcher {
                     return;
                 }
             };
+
+        // Skip quota-check requests: single user message, no tools, low max_tokens
+        if Self::is_quota_check(&anthropic_req) {
+            tracing::debug!(
+                correlation_id = %correlation_id,
+                "Skipping shadow dispatch for quota-check request"
+            );
+            return;
+        }
 
         // Convert to OpenAI format once
         let openai_body = match anthropic_to_openai(&anthropic_req) {
@@ -188,5 +200,16 @@ impl ShadowDispatcher {
         // Fix: the openai_body variable was modified by reference in the loop,
         // but we clone it each time. Suppress the unused warning.
         drop(openai_body);
+    }
+
+    /// Returns true if the request looks like a Claude Code quota check:
+    /// - Exactly one message with role `User`
+    /// - No tools defined
+    /// - `max_tokens` <= 32
+    fn is_quota_check(req: &AnthropicCreateMessageRequest) -> bool {
+        req.messages.len() == 1
+            && req.messages[0].role == AnthropicRole::User
+            && req.tools.as_ref().is_none_or(|t| t.is_empty())
+            && req.max_tokens <= 32
     }
 }

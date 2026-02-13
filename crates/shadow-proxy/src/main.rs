@@ -3,6 +3,7 @@
 
 mod config;
 mod convert;
+mod openinference;
 mod proxy;
 mod server;
 

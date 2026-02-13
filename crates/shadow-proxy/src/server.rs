@@ -11,6 +11,7 @@ use bytes::Bytes;
 use tracing::Instrument;
 
 use crate::config::ProxyConfig;
+use crate::convert::types::AnthropicCreateMessageRequest;
 use crate::proxy::correlation;
 use crate::proxy::primary;
 use crate::proxy::shadow::ShadowDispatcher;
@@ -57,11 +58,14 @@ async fn handle_messages(
 ) -> Response {
     let correlation_id = correlation::generate_id();
 
-    // Try to extract the model name for the span
-    let model = serde_json::from_slice::<serde_json::Value>(&body)
-        .ok()
-        .and_then(|v| v.get("model").and_then(|m| m.as_str().map(String::from)))
+    // Parse the request body once for model name, stream flag, and OpenInference attributes
+    let parsed: Option<AnthropicCreateMessageRequest> = serde_json::from_slice(&body).ok();
+
+    let model = parsed
+        .as_ref()
+        .map(|r| r.model.clone())
         .unwrap_or_else(|| "unknown".to_string());
+    let is_streaming = parsed.as_ref().is_some_and(|r| r.stream);
 
     let span = shadow_tracing::proxy_request_span!(&correlation_id, &model);
 
@@ -71,8 +75,35 @@ async fn handle_messages(
 
         // Forward to Anthropic (blocking, returns the streaming response)
         let url = format!("{}/v1/messages", state.config.primary.upstream_base_url);
-        primary::forward_to_anthropic(&state.primary_client, &url, &headers, body, &correlation_id)
-            .await
+
+        // If we have the parsed request, pass it for OpenInference attributes.
+        // Otherwise, construct a minimal fallback so we can still forward.
+        match parsed {
+            Some(ref req) => {
+                primary::forward_to_anthropic(
+                    &state.primary_client,
+                    &url,
+                    &headers,
+                    body,
+                    &correlation_id,
+                    is_streaming,
+                    req,
+                )
+                .await
+            }
+            None => {
+                // Fallback: forward without OpenInference attributes
+                primary::forward_raw(
+                    &state.primary_client,
+                    axum::http::Method::POST,
+                    &url,
+                    &headers,
+                    body,
+                    &correlation_id,
+                )
+                .await
+            }
+        }
     }
     .instrument(span)
     .await
