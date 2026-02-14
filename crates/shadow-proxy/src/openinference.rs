@@ -156,6 +156,135 @@ pub fn set_request_attributes(span: &Span, req: &serde_json::Value) {
     }
 }
 
+/// Set OpenInference request attributes on a shadow span from an OpenAI-format body.
+///
+/// The shadow request has already been converted from Anthropic to OpenAI format,
+/// so the message structure is `{role, content}` with optional `tool_calls`.
+pub fn set_shadow_request_attributes(span: &Span, req: &serde_json::Value) {
+    set_str(span, "openinference.span.kind", "LLM");
+
+    if let Some(model) = req.get("model").and_then(|v| v.as_str()) {
+        set_str(span, "llm.model_name", model);
+    }
+
+    // input.value = JSON string of messages array
+    if let Some(messages) = req.get("messages") {
+        if let Ok(messages_json) = serde_json::to_string(messages) {
+            set_str(span, "input.value", messages_json);
+        }
+    }
+
+    // llm.invocation_parameters
+    let mut params = serde_json::Map::new();
+    if let Some(v) = req.get("max_completion_tokens") {
+        params.insert("max_completion_tokens".to_string(), v.clone());
+    }
+    if let Some(v) = req.get("temperature") {
+        params.insert("temperature".to_string(), v.clone());
+    }
+    if let Some(v) = req.get("top_p") {
+        params.insert("top_p".to_string(), v.clone());
+    }
+    if let Some(v) = req.get("stop") {
+        params.insert("stop".to_string(), v.clone());
+    }
+    if let Ok(params_str) = serde_json::to_string(&params) {
+        set_str(span, "llm.invocation_parameters", params_str);
+    }
+
+    // Flatten input messages into OpenInference llm.input_messages
+    if let Some(msgs) = req.get("messages").and_then(|v| v.as_array()) {
+        for (idx, msg) in msgs.iter().enumerate() {
+            let prefix = format!("llm.input_messages.{idx}.message");
+
+            if let Some(role) = msg.get("role").and_then(|v| v.as_str()) {
+                set_str(span, format!("{prefix}.role"), role);
+            }
+
+            if let Some(content) = msg.get("content").and_then(|v| v.as_str()) {
+                set_str(span, format!("{prefix}.content"), content);
+            }
+
+            // Tool calls (assistant messages)
+            if let Some(tool_calls) = msg.get("tool_calls").and_then(|v| v.as_array()) {
+                for (tc_idx, tc) in tool_calls.iter().enumerate() {
+                    let tc_prefix = format!("{prefix}.tool_calls.{tc_idx}.tool_call.function");
+                    if let Some(func) = tc.get("function") {
+                        if let Some(name) = func.get("name").and_then(|v| v.as_str()) {
+                            set_str(span, format!("{tc_prefix}.name"), name);
+                        }
+                        if let Some(args) = func.get("arguments").and_then(|v| v.as_str()) {
+                            set_str(span, format!("{tc_prefix}.arguments"), args);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // llm.tools
+    if let Some(tools) = req.get("tools").and_then(|v| v.as_array()) {
+        for (i, tool) in tools.iter().enumerate() {
+            if let Ok(schema_str) = serde_json::to_string(tool) {
+                set_str(span, format!("llm.tools.{i}.tool.json_schema"), schema_str);
+            }
+        }
+    }
+}
+
+/// Set OpenInference response attributes on a shadow span from an OpenAI-format response.
+///
+/// Shadow responses are always non-streaming OpenAI chat completions.
+pub fn set_shadow_response_attributes(span: &Span, response_body: &str) {
+    let body: serde_json::Value = match serde_json::from_str(response_body) {
+        Ok(v) => v,
+        Err(_) => return,
+    };
+
+    set_str(span, "output.value", response_body);
+
+    // Extract first choice
+    let choice = match body.get("choices").and_then(|v| v.get(0)) {
+        Some(c) => c,
+        None => return,
+    };
+
+    if let Some(msg) = choice.get("message") {
+        if let Some(role) = msg.get("role").and_then(|v| v.as_str()) {
+            set_str(span, "llm.output_messages.0.message.role", role);
+        }
+
+        if let Some(content) = msg.get("content").and_then(|v| v.as_str()) {
+            set_str(span, "llm.output_messages.0.message.content", content);
+        }
+
+        if let Some(tool_calls) = msg.get("tool_calls").and_then(|v| v.as_array()) {
+            for (idx, tc) in tool_calls.iter().enumerate() {
+                let tc_prefix =
+                    format!("llm.output_messages.0.message.tool_calls.{idx}.tool_call.function");
+                if let Some(func) = tc.get("function") {
+                    if let Some(name) = func.get("name").and_then(|v| v.as_str()) {
+                        set_str(span, format!("{tc_prefix}.name"), name);
+                    }
+                    if let Some(args) = func.get("arguments").and_then(|v| v.as_str()) {
+                        set_str(span, format!("{tc_prefix}.arguments"), args);
+                    }
+                }
+            }
+        }
+    }
+
+    // Token counts (OpenAI format: prompt_tokens, completion_tokens)
+    if let Some(usage) = body.get("usage") {
+        if let Some(input) = usage.get("prompt_tokens").and_then(|v| v.as_i64()) {
+            set_i64(span, "llm.token_count.prompt", input);
+        }
+        if let Some(output) = usage.get("completion_tokens").and_then(|v| v.as_i64()) {
+            set_i64(span, "llm.token_count.completion", output);
+        }
+    }
+}
+
 /// Set OpenInference response attributes on the span from the full response bytes.
 ///
 /// For non-streaming: parses as a single JSON object.
@@ -520,5 +649,73 @@ mod tests {
         let body = b"event: message_start\ndata: {bad json}\n\nevent: content_block_delta\ndata: also bad\n\n";
         let span = tracing::info_span!("test");
         set_response_attributes(&span, body, true);
+    }
+
+    #[test]
+    fn test_shadow_request_attributes_no_panic() {
+        let json = r#"{
+            "model": "deepseek-v3.2",
+            "messages": [
+                {"role": "system", "content": "You are helpful."},
+                {"role": "user", "content": "Hello"},
+                {"role": "assistant", "content": "Hi!", "tool_calls": [
+                    {"id": "t1", "type": "function", "function": {"name": "bash", "arguments": "{\"cmd\":\"ls\"}"}}
+                ]},
+                {"role": "tool", "content": "file1.rs", "tool_call_id": "t1"},
+                {"role": "user", "content": "What did you find?"}
+            ],
+            "max_completion_tokens": 32000,
+            "stream": false,
+            "tools": [{"type": "function", "function": {"name": "bash", "description": "Run bash", "parameters": {}}}]
+        }"#;
+        let req: serde_json::Value = serde_json::from_str(json).unwrap();
+        let span = tracing::info_span!("test_shadow_req");
+        set_shadow_request_attributes(&span, &req);
+    }
+
+    #[test]
+    fn test_shadow_response_attributes_no_panic() {
+        let body = r#"{
+            "id": "chatcmpl-123",
+            "object": "chat.completion",
+            "choices": [{
+                "index": 0,
+                "message": {
+                    "role": "assistant",
+                    "content": "Hello!"
+                },
+                "finish_reason": "stop"
+            }],
+            "usage": {"prompt_tokens": 100, "completion_tokens": 10, "total_tokens": 110}
+        }"#;
+        let span = tracing::info_span!("test_shadow_resp");
+        set_shadow_response_attributes(&span, body);
+    }
+
+    #[test]
+    fn test_shadow_response_with_tool_calls_no_panic() {
+        let body = r#"{
+            "id": "chatcmpl-456",
+            "choices": [{
+                "message": {
+                    "role": "assistant",
+                    "tool_calls": [{
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {"name": "bash", "arguments": "{\"cmd\":\"ls\"}"}
+                    }]
+                },
+                "finish_reason": "tool_calls"
+            }],
+            "usage": {"prompt_tokens": 50, "completion_tokens": 20, "total_tokens": 70}
+        }"#;
+        let span = tracing::info_span!("test_shadow_resp_tc");
+        set_shadow_response_attributes(&span, body);
+    }
+
+    #[test]
+    fn test_shadow_response_invalid_json_no_panic() {
+        let span = tracing::info_span!("test_shadow_resp_bad");
+        set_shadow_response_attributes(&span, "not json");
     }
 }

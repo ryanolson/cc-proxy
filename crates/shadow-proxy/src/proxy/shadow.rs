@@ -17,6 +17,7 @@ use tracing::Instrument;
 use super::correlation::CORRELATION_HEADER;
 use crate::config::ShadowConfig;
 use crate::convert::anthropic_to_openai::anthropic_to_openai;
+use crate::openinference;
 
 /// Dispatches shadow requests to configured models via LiteLLM.
 #[derive(Clone)]
@@ -124,15 +125,23 @@ impl ShadowDispatcher {
                         }
                     };
 
+                    // Set OpenInference attributes so Phoenix renders
+                    // shadow_request as an LLM span with visible I/O.
+                    let current_span = tracing::Span::current();
+                    openinference::set_shadow_request_attributes(
+                        &current_span,
+                        &body,
+                    );
+
                     // Record the request body and message count on the span
                     // so we can verify the full history is being sent.
                     let msg_count = body["messages"]
                         .as_array()
                         .map(|a| a.len())
                         .unwrap_or(0);
-                    tracing::Span::current()
+                    current_span
                         .record("shadow.request_message_count", msg_count);
-                    tracing::Span::current()
+                    current_span
                         .record("shadow.request_body", &body_str);
 
                     req_builder = req_builder.body(body_str);
@@ -166,6 +175,12 @@ impl ShadowDispatcher {
                                             }
                                         }
                                     }
+
+                                    // Set OpenInference response attributes
+                                    openinference::set_shadow_response_attributes(
+                                        &tracing::Span::current(),
+                                        &response_body,
+                                    );
 
                                     // Store full response body as span attribute
                                     tracing::Span::current().record("shadow.response_body", &response_body);
@@ -214,6 +229,14 @@ impl ShadowDispatcher {
         drop(openai_body);
     }
 
+    /// Returns the converted OpenAI body that would be sent for a given request.
+    /// Exposed for testing only.
+    #[cfg(test)]
+    pub fn convert_for_test(request_bytes: &[u8]) -> Option<serde_json::Value> {
+        let value: serde_json::Value = serde_json::from_slice(request_bytes).ok()?;
+        anthropic_to_openai(&value).ok()
+    }
+
     /// Returns true if the request looks like a Claude Code quota check:
     /// - Exactly one message with role `user`
     /// - No tools defined
@@ -235,5 +258,185 @@ impl ShadowDispatcher {
             messages.len() == 1 && messages[0].get("role").and_then(|v| v.as_str()) == Some("user");
 
         single_user_msg && !has_tools && max_tokens <= 32
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    /// Build a realistic multi-turn Anthropic request resembling a Claude Code session.
+    fn multi_turn_request() -> serde_json::Value {
+        json!({
+            "model": "claude-sonnet-4-20250514",
+            "max_tokens": 8096,
+            "system": "You are a coding assistant.",
+            "stream": true,
+            "messages": [
+                {"role": "user", "content": "What files are in src?"},
+                {"role": "assistant", "content": [
+                    {"type": "text", "text": "Let me check."},
+                    {"type": "tool_use", "id": "t1", "name": "list_files", "input": {"path": "src"}}
+                ]},
+                {"role": "user", "content": [
+                    {"type": "tool_result", "tool_use_id": "t1", "content": "main.rs\nlib.rs"}
+                ]},
+                {"role": "assistant", "content": [
+                    {"type": "text", "text": "Found main.rs and lib.rs."}
+                ]},
+                {"role": "user", "content": "Read main.rs"},
+                {"role": "assistant", "content": [
+                    {"type": "tool_use", "id": "t2", "name": "read_file", "input": {"path": "src/main.rs"}}
+                ]},
+                {"role": "user", "content": [
+                    {"type": "tool_result", "tool_use_id": "t2", "content": "fn main() {}"}
+                ]}
+            ],
+            "tools": [
+                {"name": "list_files", "description": "List files", "input_schema": {"type": "object"}},
+                {"name": "read_file", "description": "Read a file", "input_schema": {"type": "object"}}
+            ]
+        })
+    }
+
+    #[test]
+    fn test_shadow_dispatch_preserves_full_history() {
+        let req = multi_turn_request();
+        let bytes = serde_json::to_vec(&req).unwrap();
+
+        let oai = ShadowDispatcher::convert_for_test(&bytes).expect("conversion should succeed");
+
+        let msgs = oai["messages"]
+            .as_array()
+            .expect("messages should be an array");
+
+        // 1 system + 7 conversation messages = 8
+        assert_eq!(
+            msgs.len(),
+            8,
+            "Shadow request must include full history. Got {} messages: {:#?}",
+            msgs.len(),
+            msgs
+        );
+
+        // Verify every role is present in the expected order
+        let roles: Vec<&str> = msgs.iter().map(|m| m["role"].as_str().unwrap()).collect();
+        assert_eq!(
+            roles,
+            vec![
+                "system",
+                "user",
+                "assistant",
+                "tool",
+                "assistant",
+                "user",
+                "assistant",
+                "tool"
+            ]
+        );
+    }
+
+    #[test]
+    fn test_shadow_dispatch_message_count_matches_input() {
+        // Verify that for N input messages, we get exactly N+1 output messages
+        // (the +1 is for the system prompt converted to a system message).
+        let req = multi_turn_request();
+        let input_msg_count = req["messages"].as_array().unwrap().len();
+        let bytes = serde_json::to_vec(&req).unwrap();
+
+        let oai = ShadowDispatcher::convert_for_test(&bytes).unwrap();
+        let output_msg_count = oai["messages"].as_array().unwrap().len();
+
+        // Input has 7 messages + 1 system = 8 output messages
+        assert_eq!(
+            output_msg_count,
+            input_msg_count + 1, // +1 for system prompt
+            "Output message count ({output_msg_count}) should equal input ({input_msg_count}) + 1 (system)"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_shadow_dispatch_sends_full_body_to_endpoint() {
+        use std::future::IntoFuture;
+        use std::sync::Arc;
+        use tokio::sync::Mutex;
+
+        // Set up a mock HTTP server that captures request bodies
+        let captured: Arc<Mutex<Vec<serde_json::Value>>> = Arc::new(Mutex::new(Vec::new()));
+        let captured_clone = captured.clone();
+
+        let app = axum::Router::new().route(
+            "/v1/chat/completions",
+            axum::routing::post(move |body: axum::body::Bytes| {
+                let captured = captured_clone.clone();
+                async move {
+                    if let Ok(val) = serde_json::from_slice::<serde_json::Value>(&body) {
+                        captured.lock().await.push(val);
+                    }
+                    axum::http::StatusCode::OK
+                }
+            }),
+        );
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(axum::serve(listener, app).into_future());
+
+        // Create dispatcher pointing at our mock server
+        let config = ShadowConfig {
+            litellm_url: format!("http://{addr}/v1/chat/completions"),
+            litellm_api_key: String::new(),
+            models: vec!["test-model".to_string()],
+            max_concurrent: 10,
+            timeout_secs: 5,
+        };
+        let client = reqwest::Client::new();
+        let dispatcher = ShadowDispatcher::new(client, config);
+
+        // Dispatch a multi-turn request
+        let req = multi_turn_request();
+        let bytes = serde_json::to_vec(&req).unwrap();
+        dispatcher.dispatch_all(&bytes, "test-correlation-id");
+
+        // Wait for the spawned task to complete
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+
+        // Verify the captured request
+        let bodies = captured.lock().await;
+        assert_eq!(bodies.len(), 1, "Expected exactly one shadow request");
+
+        let sent = &bodies[0];
+        let msgs = sent["messages"].as_array().expect("messages should exist");
+
+        // Full history: 1 system + 7 conversation = 8
+        assert_eq!(
+            msgs.len(),
+            8,
+            "Shadow HTTP request must contain full history. Got {} messages",
+            msgs.len()
+        );
+
+        // Model should be overridden to the shadow model
+        assert_eq!(sent["model"], "test-model");
+
+        // Stream should be false (shadows are non-streaming)
+        assert_eq!(sent["stream"], false);
+    }
+
+    #[test]
+    fn test_quota_check_skipped() {
+        let req = json!({
+            "model": "claude-sonnet-4",
+            "max_tokens": 16,
+            "messages": [{"role": "user", "content": "hi"}]
+        });
+        assert!(ShadowDispatcher::is_quota_check(&req));
+    }
+
+    #[test]
+    fn test_multi_turn_not_quota_check() {
+        let req = multi_turn_request();
+        assert!(!ShadowDispatcher::is_quota_check(&req));
     }
 }
