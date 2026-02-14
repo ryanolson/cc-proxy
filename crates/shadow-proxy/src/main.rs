@@ -15,17 +15,17 @@ use server::AppState;
 
 fn main() -> anyhow::Result<()> {
     // Determine config path
-    let config_path = std::env::args()
-        .nth(1)
-        .or_else(|| {
-            // Check for --config flag
-            let args: Vec<String> = std::env::args().collect();
-            args.iter()
-                .position(|a| a == "--config")
-                .and_then(|i| args.get(i + 1).cloned())
-        })
-        .or_else(|| std::env::var("SHADOW_PROXY_CONFIG").ok())
-        .unwrap_or_else(|| "shadow-proxy.toml".to_string());
+    let config_path = {
+        let args: Vec<String> = std::env::args().collect();
+        // Check for --config flag first
+        args.iter()
+            .position(|a| a == "--config")
+            .and_then(|i| args.get(i + 1).cloned())
+            // Fall back to positional arg
+            .or_else(|| args.get(1).filter(|a| !a.starts_with('-')).cloned())
+            .or_else(|| std::env::var("SHADOW_PROXY_CONFIG").ok())
+            .unwrap_or_else(|| "shadow-proxy.toml".to_string())
+    };
 
     // Load configuration
     let config = ProxyConfig::load(&config_path)?;

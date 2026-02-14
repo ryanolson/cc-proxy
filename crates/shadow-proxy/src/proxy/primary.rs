@@ -105,6 +105,11 @@ pub async fn forward_to_anthropic(
             if name_str == "content-type" || name_str == CORRELATION_HEADER {
                 continue;
             }
+            // Skip content-length — reqwest sets it from the actual body,
+            // and the body may have changed size (e.g. model_override rewrite)
+            if name_str == "content-length" {
+                continue;
+            }
             req_builder = req_builder.header(name, value);
         }
 
