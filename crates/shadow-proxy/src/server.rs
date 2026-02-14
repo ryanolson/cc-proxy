@@ -30,6 +30,7 @@ pub async fn run(state: AppState) -> anyhow::Result<()> {
 
     let app = Router::new()
         .route("/v1/messages", post(handle_messages))
+        .route("/v1/messages/count_tokens", post(handle_count_tokens))
         .route("/health", get(handle_health))
         .fallback(handle_fallback)
         .with_state(Arc::new(state));
@@ -48,9 +49,10 @@ pub async fn run(state: AppState) -> anyhow::Result<()> {
 /// Main handler for POST /v1/messages.
 ///
 /// 1. Generate correlation ID
-/// 2. Clone body for shadow dispatch
-/// 3. Fire-and-forget shadow requests
-/// 4. Forward original request to Anthropic and stream response back
+/// 2. Optionally rewrite the model field (if `model_override` is configured)
+/// 3. Clone body for shadow dispatch
+/// 4. Fire-and-forget shadow requests
+/// 5. Forward original request to Anthropic and stream response back
 async fn handle_messages(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
@@ -58,8 +60,17 @@ async fn handle_messages(
 ) -> Response {
     let correlation_id = correlation::generate_id();
 
-    // Parse the request body as untyped JSON — resilient to unknown content
-    // block types (thinking, citations, server_tool_use, etc.)
+    // Rewrite request body: model override + max_tokens default
+    let body = match rewrite_request_body(&body, state.config.primary.model_override.as_deref()) {
+        Ok(rewritten) => rewritten,
+        Err(e) => {
+            tracing::warn!(error = %e, "Failed to rewrite request body, forwarding unchanged");
+            body
+        }
+    };
+
+    // Parse the (possibly rewritten) request body as untyped JSON — resilient
+    // to unknown content block types (thinking, citations, server_tool_use, etc.)
     let parsed: Option<serde_json::Value> = serde_json::from_slice(&body).ok();
 
     let model = parsed
@@ -111,6 +122,34 @@ async fn handle_messages(
     .await
 }
 
+/// Rewrite fields in a JSON request body before forwarding.
+///
+/// - Replaces `model` with `new_model` (if Some)
+/// - Sets `max_tokens` to 16384 if absent or null
+///
+/// Uses `serde_json::Value` for a minimal parse-and-patch so that all other
+/// fields (including unknown/future ones) are preserved exactly.
+fn rewrite_request_body(body: &Bytes, new_model: Option<&str>) -> Result<Bytes, serde_json::Error> {
+    let mut value: serde_json::Value = serde_json::from_slice(body)?;
+    if let Some(obj) = value.as_object_mut() {
+        if let Some(model) = new_model {
+            obj.insert(
+                "model".to_string(),
+                serde_json::Value::String(model.to_string()),
+            );
+        }
+        // Default max_tokens to 16384 if not set
+        if !obj.contains_key("max_tokens") || obj.get("max_tokens").is_some_and(|v| v.is_null()) {
+            obj.insert(
+                "max_tokens".to_string(),
+                serde_json::Value::Number(16384.into()),
+            );
+        }
+    }
+    let rewritten = serde_json::to_vec(&value)?;
+    Ok(Bytes::from(rewritten))
+}
+
 /// Catch-all fallback handler for any request not matching explicit routes.
 ///
 /// Forwards the request to Anthropic unchanged (no shadow dispatch).
@@ -145,6 +184,32 @@ async fn handle_fallback(State(state): State<Arc<AppState>>, request: Request) -
         &correlation_id,
     )
     .await
+}
+
+/// Stub handler for POST /v1/messages/count_tokens.
+///
+/// Some clients call this endpoint for pre-flight token estimation. When the
+/// upstream doesn't implement it, we return a rough estimate (chars/4) to
+/// unblock the client.
+async fn handle_count_tokens(body: Bytes) -> Response {
+    let input_tokens = serde_json::from_slice::<serde_json::Value>(&body)
+        .ok()
+        .and_then(|v| {
+            // Sum up character lengths of all message content
+            v.get("messages")
+                .and_then(|m| m.as_array())
+                .map(|msgs| {
+                    msgs.iter()
+                        .filter_map(|msg| msg.get("content").and_then(|c| c.as_str()))
+                        .map(|s| s.len())
+                        .sum::<usize>()
+                })
+        })
+        .unwrap_or(100)
+        / 4; // rough chars-to-tokens ratio
+
+    let resp = serde_json::json!({ "input_tokens": input_tokens });
+    (StatusCode::OK, axum::Json(resp)).into_response()
 }
 
 /// Health check endpoint.
