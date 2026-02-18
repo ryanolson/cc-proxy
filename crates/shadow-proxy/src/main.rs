@@ -20,21 +20,26 @@ use server::AppState;
 use stats::ProxyStats;
 
 fn main() -> anyhow::Result<()> {
-    // Determine config path
-    let config_path = {
-        let args: Vec<String> = std::env::args().collect();
-        // Check for --config flag first
-        args.iter()
-            .position(|a| a == "--config")
-            .and_then(|i| args.get(i + 1).cloned())
-            // Fall back to positional arg
-            .or_else(|| args.get(1).filter(|a| !a.starts_with('-')).cloned())
-            .or_else(|| std::env::var("SHADOW_PROXY_CONFIG").ok())
-            .unwrap_or_else(|| "shadow-proxy.toml".to_string())
-    };
+    // Parse CLI args
+    let args: Vec<String> = std::env::args().collect();
+    let config_path = args.iter()
+        .position(|a| a == "--config")
+        .and_then(|i| args.get(i + 1).cloned())
+        .or_else(|| args.get(1).filter(|a| !a.starts_with('-')).cloned())
+        .or_else(|| std::env::var("SHADOW_PROXY_CONFIG").ok())
+        .unwrap_or_else(|| "shadow-proxy.toml".to_string());
+
+    let upstream_url_override = args.iter()
+        .position(|a| a == "--upstream-url")
+        .and_then(|i| args.get(i + 1).cloned());
 
     // Load configuration
-    let config = ProxyConfig::load(&config_path)?;
+    let mut config = ProxyConfig::load(&config_path)?;
+
+    // Apply CLI overrides (take precedence over TOML and env vars)
+    if let Some(url) = upstream_url_override {
+        config.primary.upstream_base_url = url;
+    }
 
     // Build the tokio runtime first — tonic gRPC exporter needs a reactor context
     let runtime = tokio::runtime::Builder::new_multi_thread()
@@ -73,7 +78,12 @@ async fn run(config: ProxyConfig) -> anyhow::Result<()> {
 
     // Build stats and mode
     let stats = ProxyStats::new();
-    let mode = RuntimeMode::new(ProxyMode::Both);
+    let initial_mode = match config.default_mode.as_str() {
+        "shadow-only" => ProxyMode::ShadowOnly,
+        "anthropic-only" => ProxyMode::AnthropicOnly,
+        _ => ProxyMode::Both,
+    };
+    let mode = RuntimeMode::new(initial_mode);
 
     // Build app state
     let state = AppState {
