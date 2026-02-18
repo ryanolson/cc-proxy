@@ -1,3 +1,5 @@
+default_mode = "anthropic-only"
+
 [server]
 listen_address = "0.0.0.0:3080"
 
@@ -13,8 +15,7 @@ models = ["gemini-2.5-flash", "deepseek-v3.2", "glm-5", "gemini-3-pro"]
 timeout_secs = 120
 max_concurrent = 50
 
+
 [tracing]
 service_name = "shadow-proxy"
-otlp_endpoint = "http://phoenix-service:4317"
-protocol = "grpc"
 log_level = "info"
