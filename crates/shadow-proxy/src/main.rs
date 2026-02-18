@@ -3,15 +3,21 @@
 
 mod config;
 mod convert;
+mod mode;
 mod openinference;
 mod proxy;
 mod server;
+mod stats;
 
+use std::sync::atomic::AtomicBool;
+use std::sync::Arc;
 use std::time::Duration;
 
 use config::ProxyConfig;
+use mode::{ProxyMode, RuntimeMode};
 use proxy::shadow::ShadowDispatcher;
 use server::AppState;
+use stats::ProxyStats;
 
 fn main() -> anyhow::Result<()> {
     // Determine config path
@@ -65,11 +71,18 @@ async fn run(config: ProxyConfig) -> anyhow::Result<()> {
     // Build shadow dispatcher
     let shadow_dispatcher = ShadowDispatcher::new(shadow_client, config.shadow.clone());
 
+    // Build stats and mode
+    let stats = ProxyStats::new();
+    let mode = RuntimeMode::new(ProxyMode::Both);
+
     // Build app state
     let state = AppState {
         config,
         primary_client,
         shadow_dispatcher,
+        stats,
+        mode,
+        tracing_enabled: Arc::new(AtomicBool::new(true)),
     };
 
     // Run the server

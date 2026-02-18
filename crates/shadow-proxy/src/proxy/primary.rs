@@ -20,6 +20,7 @@ use tracing::Instrument;
 
 use super::correlation::CORRELATION_HEADER;
 use crate::openinference;
+use crate::stats::ProxyStats;
 
 /// Headers that should NOT be forwarded (hop-by-hop headers).
 const HOP_BY_HOP_HEADERS: &[&str] = &[
@@ -43,6 +44,7 @@ struct TeeBody {
     buffer: Arc<Mutex<Vec<u8>>>,
     span: tracing::Span,
     is_streaming: bool,
+    stats: Option<ProxyStats>,
 }
 
 impl Stream for TeeBody {
@@ -61,6 +63,9 @@ impl Stream for TeeBody {
                 // Stream complete — set response attributes
                 if let Ok(buf) = self.buffer.lock() {
                     openinference::set_response_attributes(&self.span, &buf, self.is_streaming);
+                    if let Some(ref stats) = self.stats {
+                        extract_and_record_stats(stats, &buf, self.is_streaming);
+                    }
                 }
                 Poll::Ready(None)
             }
@@ -75,6 +80,7 @@ impl Stream for TeeBody {
 /// from `upstream_base_url`. The `root_span` is the parent `proxy_request`
 /// span — TeeBody holds a clone of it so OpenInference response attributes
 /// are set on the root trace (keeping it open until streaming completes).
+#[allow(clippy::too_many_arguments)]
 pub async fn forward_to_anthropic(
     client: &reqwest::Client,
     url: &str,
@@ -83,6 +89,7 @@ pub async fn forward_to_anthropic(
     correlation_id: &str,
     is_streaming: bool,
     root_span: tracing::Span,
+    stats: ProxyStats,
 ) -> Response {
     let span = shadow_tracing::primary_forward_span!(correlation_id);
     let start = Instant::now();
@@ -122,6 +129,7 @@ pub async fn forward_to_anthropic(
             correlation_id,
             is_streaming,
             &root_span,
+            Some(stats),
         )
     }
     .instrument(span)
@@ -185,6 +193,7 @@ fn build_response(
     correlation_id: &str,
     is_streaming: bool,
     span: &tracing::Span,
+    stats: Option<ProxyStats>,
 ) -> Response {
     let upstream_resp = match upstream_result {
         Ok(resp) => resp,
@@ -239,6 +248,7 @@ fn build_response(
         buffer: Arc::new(Mutex::new(Vec::new())),
         span: span.clone(),
         is_streaming,
+        stats,
     };
     let body = Body::from_stream(tee);
 
@@ -308,4 +318,94 @@ fn build_response_simple(
         tracing::error!(error = %e, "Failed to build response");
         (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response()
     })
+}
+
+/// Extract token usage and tool call counts from the Anthropic response and record to stats.
+fn extract_and_record_stats(stats: &ProxyStats, response_bytes: &[u8], is_streaming: bool) {
+    if is_streaming {
+        extract_streaming_stats(stats, response_bytes);
+    } else {
+        extract_nonstreaming_stats(stats, response_bytes);
+    }
+}
+
+fn extract_nonstreaming_stats(stats: &ProxyStats, response_bytes: &[u8]) {
+    let body: serde_json::Value = match serde_json::from_slice(response_bytes) {
+        Ok(v) => v,
+        Err(_) => return,
+    };
+
+    if let Some(usage) = body.get("usage") {
+        if let Some(input) = usage.get("input_tokens").and_then(|v| v.as_u64()) {
+            stats.add_input_tokens(input);
+        }
+        if let Some(output) = usage.get("output_tokens").and_then(|v| v.as_u64()) {
+            stats.add_output_tokens(output);
+        }
+    }
+
+    if let Some(content) = body.get("content").and_then(|v| v.as_array()) {
+        let tool_count = content
+            .iter()
+            .filter(|b| b.get("type").and_then(|t| t.as_str()) == Some("tool_use"))
+            .count() as u64;
+        if tool_count > 0 {
+            stats.add_tool_calls(tool_count);
+        }
+    }
+}
+
+fn extract_streaming_stats(stats: &ProxyStats, response_bytes: &[u8]) {
+    let body_str = match std::str::from_utf8(response_bytes) {
+        Ok(s) => s,
+        Err(_) => return,
+    };
+
+    for event_chunk in body_str.split("\n\n") {
+        let mut event_type = None;
+        let mut data_str = None;
+
+        for line in event_chunk.lines() {
+            if let Some(et) = line.strip_prefix("event: ") {
+                event_type = Some(et.trim());
+            } else if let Some(d) = line.strip_prefix("data: ") {
+                data_str = Some(d.trim());
+            }
+        }
+
+        let data_str = match data_str {
+            Some(d) => d,
+            None => continue,
+        };
+
+        let data: serde_json::Value = match serde_json::from_str(data_str) {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+
+        match event_type {
+            Some("message_start") => {
+                if let Some(usage) = data.get("message").and_then(|m| m.get("usage")) {
+                    if let Some(input) = usage.get("input_tokens").and_then(|v| v.as_u64()) {
+                        stats.add_input_tokens(input);
+                    }
+                }
+            }
+            Some("message_delta") => {
+                if let Some(usage) = data.get("usage") {
+                    if let Some(output) = usage.get("output_tokens").and_then(|v| v.as_u64()) {
+                        stats.add_output_tokens(output);
+                    }
+                }
+            }
+            Some("content_block_start") => {
+                if let Some(cb) = data.get("content_block") {
+                    if cb.get("type").and_then(|t| t.as_str()) == Some("tool_use") {
+                        stats.add_tool_calls(1);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
 }
