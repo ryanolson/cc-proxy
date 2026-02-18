@@ -129,7 +129,7 @@ pub enum AnthropicContentBlock {
     ToolResult {
         tool_use_id: String,
         #[serde(skip_serializing_if = "Option::is_none")]
-        content: Option<String>,
+        content: Option<ToolResultContent>,
         #[serde(skip_serializing_if = "Option::is_none")]
         is_error: Option<bool>,
     },
@@ -145,6 +145,14 @@ pub struct AnthropicImageSource {
     pub source_type: String,
     pub media_type: String,
     pub data: String,
+}
+
+/// Content of a `tool_result` block — either a plain string or an array of content blocks.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum ToolResultContent {
+    Text(String),
+    Blocks(Vec<AnthropicContentBlock>),
 }
 
 /// A tool definition.
