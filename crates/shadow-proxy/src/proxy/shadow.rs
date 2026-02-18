@@ -11,6 +11,8 @@
 use std::sync::Arc;
 use std::time::Instant;
 
+use axum::http::StatusCode;
+use axum::response::{IntoResponse, Response};
 use tokio::sync::Semaphore;
 use tracing::Instrument;
 
@@ -227,6 +229,102 @@ impl ShadowDispatcher {
         }
 
         drop(openai_body);
+    }
+
+    /// Send a request to the first configured shadow model and return the response.
+    ///
+    /// Used in `ShadowOnly` mode where the proxy returns the shadow model's response
+    /// instead of forwarding to Anthropic. Note: the response is in OpenAI format.
+    pub async fn dispatch_and_respond(
+        &self,
+        request_bytes: &[u8],
+        correlation_id: &str,
+    ) -> Response {
+        let value: serde_json::Value = match serde_json::from_slice(request_bytes) {
+            Ok(v) => v,
+            Err(e) => {
+                tracing::warn!(error = %e, "Failed to parse request JSON for shadow-only dispatch");
+                return (StatusCode::BAD_REQUEST, "invalid request JSON").into_response();
+            }
+        };
+
+        let mut openai_body = match anthropic_to_openai(&value) {
+            Ok(body) => body,
+            Err(e) => {
+                tracing::warn!(error = %e, "Failed to convert request to OpenAI format");
+                return (StatusCode::BAD_REQUEST, "conversion error").into_response();
+            }
+        };
+
+        let model = match self.config.models.first() {
+            Some(m) => m.clone(),
+            None => {
+                return (StatusCode::BAD_GATEWAY, "no shadow models configured").into_response();
+            }
+        };
+
+        openai_body["model"] = serde_json::json!(model);
+
+        // Try to acquire semaphore permit (non-blocking)
+        let _permit = match self.semaphore.try_acquire() {
+            Ok(permit) => permit,
+            Err(_) => {
+                tracing::warn!("Shadow semaphore full, rejecting shadow-only request");
+                return (StatusCode::SERVICE_UNAVAILABLE, "shadow dispatch at capacity")
+                    .into_response();
+            }
+        };
+
+        let body_str = match serde_json::to_string(&openai_body) {
+            Ok(s) => s,
+            Err(e) => {
+                tracing::warn!(error = %e, "Failed to serialize shadow request");
+                return (StatusCode::INTERNAL_SERVER_ERROR, "serialization error").into_response();
+            }
+        };
+
+        let mut req_builder = self
+            .client
+            .post(&self.config.litellm_url)
+            .header("content-type", "application/json")
+            .header(CORRELATION_HEADER, correlation_id)
+            .body(body_str);
+
+        if !self.config.litellm_api_key.is_empty() {
+            req_builder = req_builder.header(
+                "authorization",
+                format!("Bearer {}", self.config.litellm_api_key),
+            );
+        }
+
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(self.config.timeout_secs),
+            req_builder.send(),
+        )
+        .await;
+
+        match result {
+            Ok(Ok(resp)) => {
+                let status = resp.status();
+                let body = resp.text().await.unwrap_or_default();
+                let axum_status =
+                    StatusCode::from_u16(status.as_u16()).unwrap_or(StatusCode::BAD_GATEWAY);
+                (
+                    axum_status,
+                    [("content-type", "application/json")],
+                    body,
+                )
+                    .into_response()
+            }
+            Ok(Err(e)) => {
+                tracing::warn!(error = %e, "Shadow-only request failed");
+                (StatusCode::BAD_GATEWAY, "shadow upstream error").into_response()
+            }
+            Err(_) => {
+                tracing::warn!("Shadow-only request timed out");
+                (StatusCode::GATEWAY_TIMEOUT, "shadow upstream timeout").into_response()
+            }
+        }
     }
 
     /// Returns the converted OpenAI body that would be sent for a given request.
