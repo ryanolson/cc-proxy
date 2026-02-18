@@ -1,0 +1,33 @@
+# Route requests through a Dynamo inference frontend
+#
+# Usage:
+#   1. Expose the Dynamo frontend (e.g. via kubectl proxy or port-forward):
+#      kubectl proxy --port=8001
+#
+#   2. Start this proxy:
+#      cargo run --bin shadow-proxy -- --config shadow-proxy.dynamo.toml
+#
+#   3. Point your client at the proxy:
+#      ANTHROPIC_BASE_URL=http://localhost:3080 ANTHROPIC_API_KEY=dummy <client>
+
+[server]
+listen_address = "0.0.0.0:3080"
+
+[primary]
+upstream_base_url = "http://localhost:8001/api/v1/namespaces/default/services/my-frontend:8000/proxy"
+passthrough_auth = true    # Forward auth header unchanged (upstream may ignore it)
+timeout_secs = 300
+model_override = "my-model-name"
+
+[shadow]
+litellm_url = ""
+litellm_api_key = ""
+models = []
+timeout_secs = 120
+max_concurrent = 50
+
+[tracing]
+service_name = "shadow-proxy-dynamo"
+otlp_endpoint = ""
+protocol = "grpc"
+log_level = "info,shadow_proxy=debug"

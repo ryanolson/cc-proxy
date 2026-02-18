@@ -37,6 +37,19 @@ pub fn init_tracing(config: &TracingConfig) -> TracingGuard {
     let env_filter =
         EnvFilter::try_new(&config.log_level).unwrap_or_else(|_| EnvFilter::new("info"));
 
+    // Skip OTLP entirely if no endpoint is configured
+    if config.otlp_endpoint.is_empty() {
+        tracing_subscriber::registry()
+            .with(
+                tracing_subscriber::fmt::layer()
+                    .with_target(true)
+                    .with_writer(std::io::stderr),
+            )
+            .with(env_filter)
+            .init();
+        return TracingGuard { provider: None };
+    }
+
     match try_init_with_otlp(config, env_filter) {
         Ok(guard) => guard,
         Err(e) => {

@@ -33,6 +33,11 @@ pub struct PrimaryConfig {
 
     #[serde(default = "default_primary_timeout")]
     pub timeout_secs: u64,
+
+    /// Override the model field in `/v1/messages` request bodies.
+    /// When set, replaces whatever model the client sends with this value.
+    #[serde(default)]
+    pub model_override: Option<String>,
 }
 
 /// Shadow model dispatch configuration.
