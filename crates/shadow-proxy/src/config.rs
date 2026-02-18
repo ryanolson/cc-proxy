@@ -12,6 +12,8 @@ pub struct ProxyConfig {
     pub primary: PrimaryConfig,
     pub shadow: ShadowConfig,
     pub tracing: TracingConfig,
+    #[serde(default = "default_mode")]
+    pub default_mode: String,
 }
 
 /// Server listen configuration.
@@ -57,6 +59,10 @@ pub struct ShadowConfig {
 
     #[serde(default = "default_max_concurrent")]
     pub max_concurrent: usize,
+}
+
+fn default_mode() -> String {
+    "both".to_string()
 }
 
 fn default_listen_address() -> String {
