@@ -3,29 +3,35 @@
 
 mod config;
 mod convert;
+mod mode;
 mod openinference;
 mod proxy;
 mod server;
+mod stats;
 
+use std::sync::atomic::AtomicBool;
+use std::sync::Arc;
 use std::time::Duration;
 
 use config::ProxyConfig;
+use mode::{ProxyMode, RuntimeMode};
 use proxy::shadow::ShadowDispatcher;
 use server::AppState;
+use stats::ProxyStats;
 
 fn main() -> anyhow::Result<()> {
     // Determine config path
-    let config_path = std::env::args()
-        .nth(1)
-        .or_else(|| {
-            // Check for --config flag
-            let args: Vec<String> = std::env::args().collect();
-            args.iter()
-                .position(|a| a == "--config")
-                .and_then(|i| args.get(i + 1).cloned())
-        })
-        .or_else(|| std::env::var("SHADOW_PROXY_CONFIG").ok())
-        .unwrap_or_else(|| "shadow-proxy.toml".to_string());
+    let config_path = {
+        let args: Vec<String> = std::env::args().collect();
+        // Check for --config flag first
+        args.iter()
+            .position(|a| a == "--config")
+            .and_then(|i| args.get(i + 1).cloned())
+            // Fall back to positional arg
+            .or_else(|| args.get(1).filter(|a| !a.starts_with('-')).cloned())
+            .or_else(|| std::env::var("SHADOW_PROXY_CONFIG").ok())
+            .unwrap_or_else(|| "shadow-proxy.toml".to_string())
+    };
 
     // Load configuration
     let config = ProxyConfig::load(&config_path)?;
@@ -65,11 +71,18 @@ async fn run(config: ProxyConfig) -> anyhow::Result<()> {
     // Build shadow dispatcher
     let shadow_dispatcher = ShadowDispatcher::new(shadow_client, config.shadow.clone());
 
+    // Build stats and mode
+    let stats = ProxyStats::new();
+    let mode = RuntimeMode::new(ProxyMode::Both);
+
     // Build app state
     let state = AppState {
         config,
         primary_client,
         shadow_dispatcher,
+        stats,
+        mode,
+        tracing_enabled: Arc::new(AtomicBool::new(true)),
     };
 
     // Run the server
