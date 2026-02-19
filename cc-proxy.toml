@@ -1,0 +1,20 @@
+default_mode = "target"
+
+[server]
+listen_address = "0.0.0.0:3080"
+
+[target]
+# url set via --target-url (not stored here)
+timeout_secs = 300
+max_concurrent = 50
+
+[passthrough]
+# Used only in `compare` and `anthropic-only` modes (requires --allow-anthropic-only)
+url = "https://api.anthropic.com"
+timeout_secs = 300
+passthrough_auth = true
+
+[tracing]
+service_name = "cc-proxy"
+# otlp_endpoint = "http://localhost:4317"  # optional, omit to disable
+log_level = "info"

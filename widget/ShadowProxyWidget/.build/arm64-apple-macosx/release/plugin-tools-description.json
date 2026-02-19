@@ -1,0 +1,295 @@
+{
+  "builtTestProducts" : [
+
+  ],
+  "copyCommands" : {
+
+  },
+  "explicitTargetDependencyImportCheckingMode" : {
+    "none" : {
+
+    }
+  },
+  "generatedSourceTargetSet" : [
+
+  ],
+  "pluginDescriptions" : [
+
+  ],
+  "swiftCommands" : {
+    "C.ShadowProxyWidget-arm64-apple-macosx26.0-release.module" : {
+      "executable" : "/Library/Developer/CommandLineTools/usr/bin/swiftc",
+      "fileList" : "/Users/mkosec/work/cc-proxy/widget/ShadowProxyWidget/.build/arm64-apple-macosx/release/ShadowProxyWidget.build/sources",
+      "importPath" : "/Users/mkosec/work/cc-proxy/widget/ShadowProxyWidget/.build/arm64-apple-macosx/release/Modules",
+      "inputs" : [
+        {
+          "kind" : "file",
+          "name" : "/Users/mkosec/work/cc-proxy/widget/ShadowProxyWidget/Sources/ShadowProxyWidget/ModePickerView.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/mkosec/work/cc-proxy/widget/ShadowProxyWidget/Sources/ShadowProxyWidget/Models.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/mkosec/work/cc-proxy/widget/ShadowProxyWidget/Sources/ShadowProxyWidget/ProxyClient.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/mkosec/work/cc-proxy/widget/ShadowProxyWidget/Sources/ShadowProxyWidget/ShadowProxyWidgetApp.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/mkosec/work/cc-proxy/widget/ShadowProxyWidget/Sources/ShadowProxyWidget/StatsView.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/mkosec/work/cc-proxy/widget/ShadowProxyWidget/.build/arm64-apple-macosx/release/swift-version--1AB21518FC5DEDBE.txt"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/mkosec/work/cc-proxy/widget/ShadowProxyWidget/.build/arm64-apple-macosx/release/ShadowProxyWidget.build/sources"
+        }
+      ],
+      "isLibrary" : false,
+      "moduleName" : "ShadowProxyWidget",
+      "moduleOutputPath" : "/Users/mkosec/work/cc-proxy/widget/ShadowProxyWidget/.build/arm64-apple-macosx/release/Modules/ShadowProxyWidget.swiftmodule",
+      "objects" : [
+        "/Users/mkosec/work/cc-proxy/widget/ShadowProxyWidget/.build/arm64-apple-macosx/release/ShadowProxyWidget.build/ModePickerView.swift.o",
+        "/Users/mkosec/work/cc-proxy/widget/ShadowProxyWidget/.build/arm64-apple-macosx/release/ShadowProxyWidget.build/Models.swift.o",
+        "/Users/mkosec/work/cc-proxy/widget/ShadowProxyWidget/.build/arm64-apple-macosx/release/ShadowProxyWidget.build/ProxyClient.swift.o",
+        "/Users/mkosec/work/cc-proxy/widget/ShadowProxyWidget/.build/arm64-apple-macosx/release/ShadowProxyWidget.build/ShadowProxyWidgetApp.swift.o",
+        "/Users/mkosec/work/cc-proxy/widget/ShadowProxyWidget/.build/arm64-apple-macosx/release/ShadowProxyWidget.build/StatsView.swift.o"
+      ],
+      "otherArguments" : [
+        "-target",
+        "arm64-apple-macosx14.0",
+        "-whole-module-optimization",
+        "-num-threads",
+        "10",
+        "-serialize-diagnostics",
+        "-O",
+        "-j10",
+        "-DSWIFT_PACKAGE",
+        "-DSWIFT_MODULE_RESOURCE_BUNDLE_UNAVAILABLE",
+        "-module-cache-path",
+        "/Users/mkosec/work/cc-proxy/widget/ShadowProxyWidget/.build/arm64-apple-macosx/release/ModuleCache",
+        "-parseable-output",
+        "-Xfrontend",
+        "-entry-point-function-name",
+        "-Xfrontend",
+        "ShadowProxyWidget_main",
+        "-swift-version",
+        "5",
+        "-I",
+        "/Library/Developer/CommandLineTools/Library/Developer/Frameworks",
+        "-L",
+        "/Library/Developer/CommandLineTools/Library/Developer/Frameworks",
+        "-plugin-path",
+        "/Library/Developer/CommandLineTools/usr/lib/swift/host/plugins/testing",
+        "-sdk",
+        "/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk",
+        "-g",
+        "-Xcc",
+        "-isysroot",
+        "-Xcc",
+        "/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk",
+        "-Xcc",
+        "-fPIC",
+        "-Xcc",
+        "-g",
+        "-package-name",
+        "shadowproxywidget"
+      ],
+      "outputFileMapPath" : "/Users/mkosec/work/cc-proxy/widget/ShadowProxyWidget/.build/arm64-apple-macosx/release/ShadowProxyWidget.build/output-file-map.json",
+      "outputs" : [
+        {
+          "kind" : "file",
+          "name" : "/Users/mkosec/work/cc-proxy/widget/ShadowProxyWidget/.build/arm64-apple-macosx/release/ShadowProxyWidget.build/ModePickerView.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/mkosec/work/cc-proxy/widget/ShadowProxyWidget/.build/arm64-apple-macosx/release/ShadowProxyWidget.build/Models.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/mkosec/work/cc-proxy/widget/ShadowProxyWidget/.build/arm64-apple-macosx/release/ShadowProxyWidget.build/ProxyClient.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/mkosec/work/cc-proxy/widget/ShadowProxyWidget/.build/arm64-apple-macosx/release/ShadowProxyWidget.build/ShadowProxyWidgetApp.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/mkosec/work/cc-proxy/widget/ShadowProxyWidget/.build/arm64-apple-macosx/release/ShadowProxyWidget.build/StatsView.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/mkosec/work/cc-proxy/widget/ShadowProxyWidget/.build/arm64-apple-macosx/release/Modules/ShadowProxyWidget.swiftmodule"
+        }
+      ],
+      "prepareForIndexing" : false,
+      "sources" : [
+        "/Users/mkosec/work/cc-proxy/widget/ShadowProxyWidget/Sources/ShadowProxyWidget/ModePickerView.swift",
+        "/Users/mkosec/work/cc-proxy/widget/ShadowProxyWidget/Sources/ShadowProxyWidget/Models.swift",
+        "/Users/mkosec/work/cc-proxy/widget/ShadowProxyWidget/Sources/ShadowProxyWidget/ProxyClient.swift",
+        "/Users/mkosec/work/cc-proxy/widget/ShadowProxyWidget/Sources/ShadowProxyWidget/ShadowProxyWidgetApp.swift",
+        "/Users/mkosec/work/cc-proxy/widget/ShadowProxyWidget/Sources/ShadowProxyWidget/StatsView.swift"
+      ],
+      "tempsPath" : "/Users/mkosec/work/cc-proxy/widget/ShadowProxyWidget/.build/arm64-apple-macosx/release/ShadowProxyWidget.build",
+      "wholeModuleOptimization" : true
+    }
+  },
+  "swiftFrontendCommands" : {
+
+  },
+  "swiftTargetScanArgs" : {
+    "ShadowProxyWidget" : [
+      "/Library/Developer/CommandLineTools/usr/bin/swiftc",
+      "-module-name",
+      "ShadowProxyWidget",
+      "-package-name",
+      "shadowproxywidget",
+      "-c",
+      "/Users/mkosec/work/cc-proxy/widget/ShadowProxyWidget/Sources/ShadowProxyWidget/ModePickerView.swift",
+      "/Users/mkosec/work/cc-proxy/widget/ShadowProxyWidget/Sources/ShadowProxyWidget/Models.swift",
+      "/Users/mkosec/work/cc-proxy/widget/ShadowProxyWidget/Sources/ShadowProxyWidget/ProxyClient.swift",
+      "/Users/mkosec/work/cc-proxy/widget/ShadowProxyWidget/Sources/ShadowProxyWidget/ShadowProxyWidgetApp.swift",
+      "/Users/mkosec/work/cc-proxy/widget/ShadowProxyWidget/Sources/ShadowProxyWidget/StatsView.swift",
+      "-I",
+      "/Users/mkosec/work/cc-proxy/widget/ShadowProxyWidget/.build/arm64-apple-macosx/release/Modules",
+      "-target",
+      "arm64-apple-macosx14.0",
+      "-whole-module-optimization",
+      "-num-threads",
+      "10",
+      "-serialize-diagnostics",
+      "-O",
+      "-j10",
+      "-DSWIFT_PACKAGE",
+      "-DSWIFT_MODULE_RESOURCE_BUNDLE_UNAVAILABLE",
+      "-module-cache-path",
+      "/Users/mkosec/work/cc-proxy/widget/ShadowProxyWidget/.build/arm64-apple-macosx/release/ModuleCache",
+      "-parseable-output",
+      "-Xfrontend",
+      "-entry-point-function-name",
+      "-Xfrontend",
+      "ShadowProxyWidget_main",
+      "-swift-version",
+      "5",
+      "-I",
+      "/Library/Developer/CommandLineTools/Library/Developer/Frameworks",
+      "-L",
+      "/Library/Developer/CommandLineTools/Library/Developer/Frameworks",
+      "-plugin-path",
+      "/Library/Developer/CommandLineTools/usr/lib/swift/host/plugins/testing",
+      "-sdk",
+      "/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk",
+      "-g",
+      "-Xcc",
+      "-isysroot",
+      "-Xcc",
+      "/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk",
+      "-Xcc",
+      "-fPIC",
+      "-Xcc",
+      "-g",
+      "-package-name",
+      "shadowproxywidget",
+      "-driver-use-frontend-path",
+      "/Library/Developer/CommandLineTools/usr/bin/swiftc"
+    ]
+  },
+  "targetDependencyMap" : {
+    "ShadowProxyWidget" : [
+
+    ]
+  },
+  "testDiscoveryCommands" : {
+
+  },
+  "testEntryPointCommands" : {
+
+  },
+  "traitConfiguration" : {
+    "default" : {
+
+    }
+  },
+  "writeCommands" : {
+    "/Users/mkosec/work/cc-proxy/widget/ShadowProxyWidget/.build/arm64-apple-macosx/release/ShadowProxyWidget.build/sources" : {
+      "alwaysOutOfDate" : false,
+      "inputs" : [
+        {
+          "kind" : "virtual",
+          "name" : "<sources-file-list>"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/mkosec/work/cc-proxy/widget/ShadowProxyWidget/Sources/ShadowProxyWidget/ModePickerView.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/mkosec/work/cc-proxy/widget/ShadowProxyWidget/Sources/ShadowProxyWidget/Models.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/mkosec/work/cc-proxy/widget/ShadowProxyWidget/Sources/ShadowProxyWidget/ProxyClient.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/mkosec/work/cc-proxy/widget/ShadowProxyWidget/Sources/ShadowProxyWidget/ShadowProxyWidgetApp.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/mkosec/work/cc-proxy/widget/ShadowProxyWidget/Sources/ShadowProxyWidget/StatsView.swift"
+        }
+      ],
+      "outputFilePath" : "/Users/mkosec/work/cc-proxy/widget/ShadowProxyWidget/.build/arm64-apple-macosx/release/ShadowProxyWidget.build/sources"
+    },
+    "/Users/mkosec/work/cc-proxy/widget/ShadowProxyWidget/.build/arm64-apple-macosx/release/ShadowProxyWidget.product/Objects.LinkFileList" : {
+      "alwaysOutOfDate" : false,
+      "inputs" : [
+        {
+          "kind" : "virtual",
+          "name" : "<link-file-list>"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/mkosec/work/cc-proxy/widget/ShadowProxyWidget/.build/arm64-apple-macosx/release/ShadowProxyWidget.build/ModePickerView.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/mkosec/work/cc-proxy/widget/ShadowProxyWidget/.build/arm64-apple-macosx/release/ShadowProxyWidget.build/Models.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/mkosec/work/cc-proxy/widget/ShadowProxyWidget/.build/arm64-apple-macosx/release/ShadowProxyWidget.build/ProxyClient.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/mkosec/work/cc-proxy/widget/ShadowProxyWidget/.build/arm64-apple-macosx/release/ShadowProxyWidget.build/ShadowProxyWidgetApp.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/mkosec/work/cc-proxy/widget/ShadowProxyWidget/.build/arm64-apple-macosx/release/ShadowProxyWidget.build/StatsView.swift.o"
+        }
+      ],
+      "outputFilePath" : "/Users/mkosec/work/cc-proxy/widget/ShadowProxyWidget/.build/arm64-apple-macosx/release/ShadowProxyWidget.product/Objects.LinkFileList"
+    },
+    "/Users/mkosec/work/cc-proxy/widget/ShadowProxyWidget/.build/arm64-apple-macosx/release/swift-version--1AB21518FC5DEDBE.txt" : {
+      "alwaysOutOfDate" : true,
+      "inputs" : [
+        {
+          "kind" : "virtual",
+          "name" : "<swift-get-version>"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Library/Developer/CommandLineTools/usr/bin/swiftc"
+        }
+      ],
+      "outputFilePath" : "/Users/mkosec/work/cc-proxy/widget/ShadowProxyWidget/.build/arm64-apple-macosx/release/swift-version--1AB21518FC5DEDBE.txt"
+    }
+  }
+}

@@ -1,0 +1,15 @@
+[package]
+name = "cc-tracing"
+version.workspace = true
+edition.workspace = true
+description = "Reusable OTLP tracing library for cc-proxy"
+
+[dependencies]
+anyhow = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+tracing-opentelemetry = { workspace = true }
+opentelemetry = { workspace = true }
+opentelemetry_sdk = { workspace = true }
+opentelemetry-otlp = { workspace = true }
+serde = { workspace = true }
