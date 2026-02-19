@@ -39,12 +39,20 @@ const HOP_BY_HOP_HEADERS: &[&str] = &[
 /// copy of all data. When the inner stream completes, it calls
 /// `set_response_attributes()` on the held tracing span and drops the span
 /// clone (which closes the OTel span).
+///
+/// Also records timing attributes on the root span:
+/// - `ttft_ms`: milliseconds from `start` to first chunk received
+/// - `total_duration_ms`: milliseconds from `start` to stream end
 struct TeeBody {
     inner: Pin<Box<dyn Stream<Item = Result<Bytes, reqwest::Error>> + Send>>,
     buffer: Arc<Mutex<Vec<u8>>>,
     span: tracing::Span,
     is_streaming: bool,
     stats: Option<ProxyStats>,
+    /// When the upstream request was sent (used to compute timing attributes).
+    start: Instant,
+    /// Whether the first chunk has been seen (to record ttft_ms exactly once).
+    first_chunk_seen: bool,
 }
 
 impl Stream for TeeBody {
@@ -53,6 +61,12 @@ impl Stream for TeeBody {
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         match self.inner.as_mut().poll_next(cx) {
             Poll::Ready(Some(Ok(chunk))) => {
+                // Record time-to-first-token exactly once: the moment the first
+                // upstream byte arrives after the request was sent.
+                if !self.first_chunk_seen {
+                    self.first_chunk_seen = true;
+                    self.span.record("ttft_ms", self.start.elapsed().as_millis() as u64);
+                }
                 if let Ok(mut buf) = self.buffer.lock() {
                     buf.extend_from_slice(&chunk);
                 }
@@ -60,6 +74,9 @@ impl Stream for TeeBody {
             }
             Poll::Ready(Some(Err(e))) => Poll::Ready(Some(Err(e))),
             Poll::Ready(None) => {
+                // Record total end-to-end streaming duration (request sent → last byte).
+                self.span.record("total_duration_ms", self.start.elapsed().as_millis() as u64);
+
                 // Stream complete — set response attributes
                 if let Ok(buf) = self.buffer.lock() {
                     openinference::set_response_attributes(&self.span, &buf, self.is_streaming);
@@ -305,6 +322,14 @@ fn build_response(
             .unwrap_or_else(|_| HeaderValue::from_static("unknown")),
     );
 
+    // Capture upstream request ID (Anthropic sets x-request-id; targets may too)
+    if let Some(req_id) = upstream_resp.headers()
+        .get("x-request-id")
+        .and_then(|v| v.to_str().ok())
+    {
+        span.record("anthropic_request_id", req_id);
+    }
+
     // Wrap the upstream byte stream in TeeBody to capture output for OpenInference
     let tee = TeeBody {
         inner: Box::pin(upstream_resp.bytes_stream()),
@@ -312,6 +337,8 @@ fn build_response(
         span: span.clone(),
         is_streaming,
         stats,
+        start,
+        first_chunk_seen: false,
     };
     let body = Body::from_stream(tee);
 
@@ -424,6 +451,11 @@ fn extract_streaming_stats(stats: &ProxyStats, response_bytes: &[u8]) {
         Err(_) => return,
     };
 
+    // Guard against double-counting input_tokens: Anthropic sends them in
+    // message_start, GLM sends them in message_delta. Some endpoints may send
+    // both. We take input_tokens from whichever event delivers them first.
+    let mut input_tokens_seen = false;
+
     for event_chunk in body_str.split("\n\n") {
         let mut event_type = None;
         let mut data_str = None;
@@ -451,6 +483,7 @@ fn extract_streaming_stats(stats: &ProxyStats, response_bytes: &[u8]) {
                 if let Some(usage) = data.get("message").and_then(|m| m.get("usage")) {
                     if let Some(input) = usage.get("input_tokens").and_then(|v| v.as_u64()) {
                         stats.add_input_tokens(input);
+                        input_tokens_seen = true;
                     }
                 }
             }
@@ -459,9 +492,13 @@ fn extract_streaming_stats(stats: &ProxyStats, response_bytes: &[u8]) {
                     if let Some(output) = usage.get("output_tokens").and_then(|v| v.as_u64()) {
                         stats.add_output_tokens(output);
                     }
-                    // Some targets (e.g. GLM) report input_tokens here instead of message_start
-                    if let Some(input) = usage.get("input_tokens").and_then(|v| v.as_u64()) {
-                        stats.add_input_tokens(input);
+                    // Fallback: some targets (e.g. GLM) report input_tokens here
+                    // instead of message_start. Only record if not already seen.
+                    if !input_tokens_seen {
+                        if let Some(input) = usage.get("input_tokens").and_then(|v| v.as_u64()) {
+                            stats.add_input_tokens(input);
+                            input_tokens_seen = true;
+                        }
                     }
                 }
             }
