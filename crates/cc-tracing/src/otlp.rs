@@ -38,19 +38,22 @@ pub fn init_tracing(config: &TracingConfig) -> TracingGuard {
         EnvFilter::try_new(&config.log_level).unwrap_or_else(|_| EnvFilter::new("info"));
 
     // Skip OTLP entirely if no endpoint is configured
-    if config.otlp_endpoint.is_empty() {
-        tracing_subscriber::registry()
-            .with(
-                tracing_subscriber::fmt::layer()
-                    .with_target(true)
-                    .with_writer(std::io::stderr),
-            )
-            .with(env_filter)
-            .init();
-        return TracingGuard { provider: None };
-    }
+    let endpoint = match &config.otlp_endpoint {
+        Some(url) => url.clone(),
+        None => {
+            tracing_subscriber::registry()
+                .with(
+                    tracing_subscriber::fmt::layer()
+                        .with_target(true)
+                        .with_writer(std::io::stderr),
+                )
+                .with(env_filter)
+                .init();
+            return TracingGuard { provider: None };
+        }
+    };
 
-    match try_init_with_otlp(config, env_filter) {
+    match try_init_with_otlp(config, &endpoint, env_filter) {
         Ok(guard) => guard,
         Err(e) => {
             // OTLP failed — fall back to fmt-only so the proxy still starts
@@ -68,7 +71,7 @@ pub fn init_tracing(config: &TracingConfig) -> TracingGuard {
 
             tracing::warn!(
                 error = %e,
-                endpoint = %config.otlp_endpoint,
+                endpoint = %endpoint,
                 "OTLP exporter failed to initialize, running with fmt-only tracing"
             );
 
@@ -79,16 +82,16 @@ pub fn init_tracing(config: &TracingConfig) -> TracingGuard {
 
 /// Try to initialize tracing with OTLP export. Returns Err if the exporter
 /// cannot be built.
-fn try_init_with_otlp(config: &TracingConfig, env_filter: EnvFilter) -> Result<TracingGuard> {
+fn try_init_with_otlp(config: &TracingConfig, endpoint: &str, env_filter: EnvFilter) -> Result<TracingGuard> {
     // Build OTLP exporter
     let otlp_exporter = match config.protocol {
         OtlpProtocol::Grpc => opentelemetry_otlp::SpanExporter::builder()
             .with_tonic()
-            .with_endpoint(&config.otlp_endpoint)
+            .with_endpoint(endpoint)
             .build()?,
         OtlpProtocol::Http => opentelemetry_otlp::SpanExporter::builder()
             .with_http()
-            .with_endpoint(&config.otlp_endpoint)
+            .with_endpoint(endpoint)
             .build()?,
     };
 
@@ -116,7 +119,7 @@ fn try_init_with_otlp(config: &TracingConfig, env_filter: EnvFilter) -> Result<T
         .init();
 
     tracing::info!(
-        endpoint = %config.otlp_endpoint,
+        endpoint = %endpoint,
         service = %config.service_name,
         protocol = ?config.protocol,
         "OpenTelemetry OTLP tracing initialized"

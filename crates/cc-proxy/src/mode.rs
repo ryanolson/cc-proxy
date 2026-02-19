@@ -1,6 +1,6 @@
 //! Runtime proxy mode toggle.
 //!
-//! Controls which paths are active: Anthropic-only, shadow-only, or both.
+//! Controls which paths are active: Anthropic-only, target-only, or compare.
 //! Lock-free atomic — mode is read on every request hot path.
 
 use std::sync::atomic::{AtomicU8, Ordering};
@@ -10,21 +10,23 @@ use serde::{Deserialize, Serialize};
 
 /// Operating mode for the proxy.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
 #[repr(u8)]
 pub enum ProxyMode {
+    #[serde(rename = "anthropic-only")]
     AnthropicOnly = 0,
-    ShadowOnly = 1,
-    Both = 2,
+    #[serde(rename = "target")]
+    TargetOnly = 1,
+    #[serde(rename = "compare")]
+    Compare = 2,
 }
 
 impl ProxyMode {
     fn from_u8(v: u8) -> Self {
         match v {
             0 => ProxyMode::AnthropicOnly,
-            1 => ProxyMode::ShadowOnly,
-            2 => ProxyMode::Both,
-            _ => ProxyMode::Both,
+            1 => ProxyMode::TargetOnly,
+            2 => ProxyMode::Compare,
+            _ => ProxyMode::Compare,
         }
     }
 }

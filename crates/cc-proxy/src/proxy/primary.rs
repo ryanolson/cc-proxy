@@ -91,7 +91,8 @@ pub async fn forward_to_anthropic(
     root_span: tracing::Span,
     stats: ProxyStats,
 ) -> Response {
-    let span = shadow_tracing::primary_forward_span!(correlation_id);
+    let host = url.trim_start_matches("https://").trim_start_matches("http://").split('/').next().unwrap_or(url);
+    let span = cc_tracing::primary_forward_span!(correlation_id, host);
     let start = Instant::now();
 
     async {
@@ -121,6 +122,68 @@ pub async fn forward_to_anthropic(
         }
 
         // Send the request
+        let upstream_result = req_builder.send().await;
+
+        build_response(
+            upstream_result,
+            start,
+            correlation_id,
+            is_streaming,
+            &root_span,
+            Some(stats),
+        )
+    }
+    .instrument(span)
+    .await
+}
+
+/// Forward the raw request body to a target endpoint and stream the response back.
+///
+/// Used in `TargetOnly` mode. Identical to `forward_to_anthropic` except:
+/// - Hits `target_base_url/v1/messages` instead of Anthropic
+/// - Does NOT forward the `x-api-key` header (target handles auth separately)
+#[allow(clippy::too_many_arguments)]
+pub async fn forward_to_target(
+    client: &reqwest::Client,
+    target_base_url: &str,
+    headers: &HeaderMap,
+    body: Bytes,
+    correlation_id: &str,
+    is_streaming: bool,
+    root_span: tracing::Span,
+    stats: ProxyStats,
+) -> Response {
+    let url = format!("{}/v1/messages", target_base_url);
+    let host = target_base_url.trim_start_matches("https://").trim_start_matches("http://").split('/').next().unwrap_or(target_base_url);
+    let span = cc_tracing::primary_forward_span!(correlation_id, host);
+    let start = Instant::now();
+
+    async {
+        // Build the upstream request
+        let mut req_builder = client
+            .post(&url)
+            .body(body)
+            .header("content-type", "application/json")
+            .header(CORRELATION_HEADER, correlation_id);
+
+        // Forward non-hop-by-hop headers, but skip x-api-key (target handles auth)
+        for (name, value) in headers.iter() {
+            let name_str = name.as_str().to_lowercase();
+            if HOP_BY_HOP_HEADERS.contains(&name_str.as_str()) {
+                continue;
+            }
+            if name_str == "content-type" || name_str == CORRELATION_HEADER {
+                continue;
+            }
+            if name_str == "content-length" {
+                continue;
+            }
+            if name_str == "x-api-key" {
+                continue;
+            }
+            req_builder = req_builder.header(name, value);
+        }
+
         let upstream_result = req_builder.send().await;
 
         build_response(
@@ -395,6 +458,10 @@ fn extract_streaming_stats(stats: &ProxyStats, response_bytes: &[u8]) {
                 if let Some(usage) = data.get("usage") {
                     if let Some(output) = usage.get("output_tokens").and_then(|v| v.as_u64()) {
                         stats.add_output_tokens(output);
+                    }
+                    // Some targets (e.g. some targets) report input_tokens here instead of message_start
+                    if let Some(input) = usage.get("input_tokens").and_then(|v| v.as_u64()) {
+                        stats.add_input_tokens(input);
                     }
                 }
             }

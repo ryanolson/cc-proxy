@@ -1,8 +1,8 @@
 [package]
-name = "shadow-tracing"
+name = "cc-tracing"
 version.workspace = true
 edition.workspace = true
-description = "Reusable OTLP tracing library for shadow-proxy"
+description = "Reusable OTLP tracing library for cc-proxy"
 
 [dependencies]
 anyhow = { workspace = true }

@@ -1,0 +1,27 @@
+# Local development config — use with: cargo run --release -- --config cc-proxy.local.toml
+#
+# OTLP export is optional: if Phoenix isn't running, the proxy starts
+# with fmt-only tracing (warnings logged, no spans exported).
+#
+# Compare dispatch is fire-and-forget: if the target isn't running, requests
+# fail silently with warnings in logs.
+
+[server]
+listen_address = "0.0.0.0:3080"
+
+[target]
+# url set via --target-url (not stored here)
+timeout_secs = 300
+max_concurrent = 50
+
+[passthrough]
+# Used only in `compare` and `anthropic-only` modes (requires --allow-anthropic-only)
+url = "https://api.anthropic.com"
+timeout_secs = 300
+passthrough_auth = true
+
+[tracing]
+service_name = "cc-proxy"
+otlp_endpoint = "http://localhost:4317"
+protocol = "grpc"
+log_level = "debug,cc_proxy=trace"

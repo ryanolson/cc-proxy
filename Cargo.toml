@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/shadow-tracing", "crates/shadow-proxy"]
+members = ["crates/cc-tracing", "crates/cc-proxy"]
 
 [workspace.package]
 edition = "2021"

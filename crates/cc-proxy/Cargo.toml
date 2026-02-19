@@ -1,11 +1,11 @@
 [package]
-name = "shadow-proxy"
+name = "cc-proxy"
 version.workspace = true
 edition.workspace = true
-description = "Transparent proxy for shadowing Claude Code requests to alternative models"
+description = "Model gateway for routing Claude Code to self-hosted Anthropic-format deployments"
 
 [dependencies]
-shadow-tracing = { path = "../shadow-tracing" }
+cc-tracing = { path = "../cc-tracing" }
 
 anyhow = { workspace = true }
 tokio = { workspace = true }

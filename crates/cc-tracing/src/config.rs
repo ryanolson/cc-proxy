@@ -10,8 +10,9 @@ pub struct TracingConfig {
     pub service_name: String,
 
     /// OTLP collector endpoint (e.g. "http://phoenix:4317").
-    #[serde(default = "default_otlp_endpoint")]
-    pub otlp_endpoint: String,
+    /// When `None`, OTLP export is disabled and only fmt logging is used.
+    #[serde(default)]
+    pub otlp_endpoint: Option<String>,
 
     /// Transport protocol for OTLP export.
     #[serde(default)]
@@ -35,10 +36,6 @@ fn default_service_name() -> String {
     "shadow-proxy".to_string()
 }
 
-fn default_otlp_endpoint() -> String {
-    "http://localhost:4317".to_string()
-}
-
 fn default_log_level() -> String {
     "info".to_string()
 }
@@ -47,7 +44,7 @@ impl Default for TracingConfig {
     fn default() -> Self {
         Self {
             service_name: default_service_name(),
-            otlp_endpoint: default_otlp_endpoint(),
+            otlp_endpoint: None,
             protocol: OtlpProtocol::default(),
             log_level: default_log_level(),
         }

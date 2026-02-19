@@ -17,20 +17,20 @@ macro_rules! proxy_request_span {
 /// Create a tracing span for the primary Anthropic forward.
 #[macro_export]
 macro_rules! primary_forward_span {
-    ($correlation_id:expr) => {
+    ($correlation_id:expr, $target:expr) => {
         tracing::info_span!(
             "primary_forward",
             correlation_id = %$correlation_id,
-            target = "api.anthropic.com",
+            target = %$target,
             status = tracing::field::Empty,
             latency_ms = tracing::field::Empty,
         )
     };
 }
 
-/// Create a tracing span for a shadow request.
+/// Create a tracing span for a compare request to the shadow target.
 #[macro_export]
-macro_rules! shadow_request_span {
+macro_rules! compare_request_span {
     ($correlation_id:expr, $model:expr) => {
         tracing::info_span!(
             "shadow_request",

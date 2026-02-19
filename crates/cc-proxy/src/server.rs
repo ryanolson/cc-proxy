@@ -16,7 +16,7 @@ use crate::mode::{ProxyMode, RuntimeMode};
 use crate::openinference;
 use crate::proxy::correlation;
 use crate::proxy::primary;
-use crate::proxy::shadow::ShadowDispatcher;
+use crate::proxy::compare::CompareDispatcher;
 use crate::stats::ProxyStats;
 
 /// Shared application state.
@@ -24,7 +24,7 @@ use crate::stats::ProxyStats;
 pub struct AppState {
     pub config: ProxyConfig,
     pub primary_client: reqwest::Client,
-    pub shadow_dispatcher: ShadowDispatcher,
+    pub compare_dispatcher: CompareDispatcher,
     pub stats: ProxyStats,
     pub mode: RuntimeMode,
     pub tracing_enabled: Arc<AtomicBool>,
@@ -44,13 +44,13 @@ pub async fn run(state: AppState) -> anyhow::Result<()> {
         .with_state(Arc::new(state));
 
     let listener = tokio::net::TcpListener::bind(&listen_addr).await?;
-    tracing::info!(address = %listen_addr, "Shadow proxy listening");
+    tracing::info!(address = %listen_addr, "cc-proxy listening");
 
     axum::serve(listener, app)
         .with_graceful_shutdown(shutdown_signal())
         .await?;
 
-    tracing::info!("Shadow proxy shut down gracefully");
+    tracing::info!("cc-proxy shut down gracefully");
     Ok(())
 }
 
@@ -69,7 +69,7 @@ async fn handle_messages(
     let correlation_id = correlation::generate_id();
 
     // Rewrite request body: model override + max_tokens default
-    let body = match rewrite_request_body(&body, state.config.primary.model_override.as_deref()) {
+    let body = match rewrite_request_body(&body, state.config.model_override.as_deref()) {
         Ok(rewritten) => rewritten,
         Err(e) => {
             tracing::warn!(error = %e, "Failed to rewrite request body, forwarding unchanged");
@@ -91,7 +91,7 @@ async fn handle_messages(
         .and_then(|v| v.get("stream").and_then(|s| s.as_bool()))
         .unwrap_or(false);
 
-    let span = shadow_tracing::proxy_request_span!(&correlation_id, &model);
+    let span = cc_tracing::proxy_request_span!(&correlation_id, &model);
 
     // Set OpenInference request attributes on the root span so Phoenix
     // shows the trace as kind=LLM with visible I/O at the top level.
@@ -111,24 +111,40 @@ async fn handle_messages(
         let current_mode = state.mode.get();
 
         match current_mode {
+            ProxyMode::TargetOnly => {
+                // Forward request directly to the target endpoint
+                return primary::forward_to_target(
+                    &state.primary_client,
+                    state.config.target.url.as_deref().unwrap_or(""),
+                    &headers,
+                    body,
+                    &correlation_id,
+                    is_streaming,
+                    tracing::Span::current(),
+                    state.stats.clone(),
+                )
+                .await;
+            }
+            ProxyMode::Compare => {
+                // Fire-and-forget compare request to target, then forward to Anthropic
+                state.compare_dispatcher.dispatch(body.clone(), correlation_id.clone());
+            }
             ProxyMode::AnthropicOnly => {
-                // Skip shadow dispatch, forward to Anthropic only
-            }
-            ProxyMode::Both => {
-                // Fire shadow requests (non-blocking, fire-and-forget)
-                state.shadow_dispatcher.dispatch_all(&body, &correlation_id);
-            }
-            ProxyMode::ShadowOnly => {
-                // Send to shadow model and return that response directly
-                return state
-                    .shadow_dispatcher
-                    .dispatch_and_respond(&body, &correlation_id)
-                    .await;
+                // Check if anthropic-only mode is allowed
+                if !state.config.anthropic_only_allowed {
+                    return (
+                        StatusCode::FORBIDDEN,
+                        axum::Json(serde_json::json!({
+                            "error": "anthropic-only mode is not enabled; restart with --allow-anthropic-only"
+                        })),
+                    )
+                        .into_response();
+                }
             }
         }
 
         // Forward to Anthropic (blocking, returns the streaming response)
-        let url = format!("{}/v1/messages", state.config.primary.upstream_base_url);
+        let url = format!("{}/v1/messages", state.config.passthrough.url);
 
         // Pass the root span so TeeBody can set response attributes on it
         // when streaming completes, keeping the span open until then.
@@ -199,6 +215,13 @@ fn rewrite_request_body(body: &Bytes, new_model: Option<&str>) -> Result<Bytes, 
 /// Forwards the request to Anthropic unchanged (no shadow dispatch).
 /// Supports all HTTP methods (GET, POST, DELETE, etc.).
 async fn handle_fallback(State(state): State<Arc<AppState>>, request: Request) -> Response {
+    // In target mode, never hit the passthrough upstream — the target is the only backend.
+    if state.mode.get() == ProxyMode::TargetOnly {
+        let path = request.uri().path().to_string();
+        tracing::debug!(path = %path, "Dropping unmatched route in target mode (no passthrough)");
+        return (StatusCode::NOT_FOUND, "not found").into_response();
+    }
+
     let correlation_id = correlation::generate_id();
 
     let method = request.method().clone();
@@ -208,7 +231,7 @@ async fn handle_fallback(State(state): State<Arc<AppState>>, request: Request) -
         .query()
         .map(|q| format!("?{q}"))
         .unwrap_or_default();
-    let url = format!("{}{path}{query}", state.config.primary.upstream_base_url);
+    let url = format!("{}{path}{query}", state.config.passthrough.url);
 
     let headers = request.headers().clone();
     let body = match axum::body::to_bytes(request.into_body(), 10 * 1024 * 1024).await {
@@ -262,12 +285,23 @@ async fn handle_set_mode(
             return (
                 StatusCode::BAD_REQUEST,
                 axum::Json(serde_json::json!({
-                    "error": "invalid mode, expected: anthropic-only, shadow-only, or both"
+                    "error": "invalid mode, expected: target, compare, or anthropic-only"
                 })),
             )
                 .into_response();
         }
     };
+
+    // Block anthropic-only mode unless explicitly allowed at launch
+    if mode == ProxyMode::AnthropicOnly && !state.config.anthropic_only_allowed {
+        return (
+            StatusCode::FORBIDDEN,
+            axum::Json(serde_json::json!({
+                "error": "anthropic-only mode is disabled; restart with --allow-anthropic-only"
+            })),
+        )
+            .into_response();
+    }
 
     state.mode.set(mode);
     tracing::info!(mode = %mode_str, "Proxy mode changed");
