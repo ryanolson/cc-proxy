@@ -28,8 +28,8 @@ cargo build --release
   --target-url https://<your-model-endpoint> \
   --model glm-5-fp8
 
-# Point Claude Code at the proxy
-export ANTHROPIC_BASE_URL=http://localhost:3080
+# Launch Claude Code through the proxy
+ANTHROPIC_BASE_URL=http://localhost:3080 claude --model glm-5-fp8
 ```
 
 ## CLI Args
