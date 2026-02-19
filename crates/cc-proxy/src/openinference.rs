@@ -478,6 +478,13 @@ fn set_streaming_response_attributes(span: &Span, response_bytes: &[u8]) {
                     if let Some(ot) = usage.get("output_tokens").and_then(|v| v.as_i64()) {
                         output_tokens = Some(ot);
                     }
+                    // Fallback: GLM reports input_tokens here instead of message_start.
+                    // Only set if message_start didn't already provide them.
+                    if input_tokens.is_none() {
+                        if let Some(it) = usage.get("input_tokens").and_then(|v| v.as_i64()) {
+                            input_tokens = Some(it);
+                        }
+                    }
                 }
             }
             _ => {}
