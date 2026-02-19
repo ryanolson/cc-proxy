@@ -3,6 +3,13 @@
 /// Create a tracing span for the top-level proxy request.
 ///
 /// Usage: `let _span = proxy_request_span!(correlation_id, model).entered();`
+///
+/// Timing fields recorded later by `TeeBody`:
+/// - `ttft_ms`: milliseconds from request send to first streaming chunk
+/// - `total_duration_ms`: milliseconds from request send to stream end
+///
+/// Upstream identity:
+/// - `anthropic_request_id`: `x-request-id` from the upstream response headers
 #[macro_export]
 macro_rules! proxy_request_span {
     ($correlation_id:expr, $model:expr) => {
@@ -10,6 +17,9 @@ macro_rules! proxy_request_span {
             "proxy_request",
             correlation_id = %$correlation_id,
             original_model = %$model,
+            ttft_ms = tracing::field::Empty,
+            total_duration_ms = tracing::field::Empty,
+            anthropic_request_id = tracing::field::Empty,
         )
     };
 }
