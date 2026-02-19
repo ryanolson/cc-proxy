@@ -175,6 +175,57 @@ curl -s http://localhost:3080/api/stats | python3 -m json.tool
 - `--model glm-5-fp8` on the `claude` command sets the *initial* model; `--model` on the proxy rewrites ALL requests including subagents — both are needed
 - GLM reports `input_tokens` in the `message_delta` SSE event, not `message_start` (unlike Anthropic)
 
+## Tracing with Phoenix
+
+OpenTelemetry spans are exported to any OTLP collector. [Arize Phoenix](https://phoenix.arize.com) is the recommended local collector — it provides a UI for inspecting LLM traces with token counts, TTFT, and full message I/O.
+
+### 1. Start Phoenix (tmux session `phoenix`)
+
+```bash
+tmux new-session -d -s phoenix
+tmux send-keys -t phoenix 'uv run --with arize-phoenix phoenix serve' Enter
+# UI at http://localhost:6006 — OTLP gRPC on :4317
+```
+
+Confirm Phoenix is up:
+```bash
+curl -s -o /dev/null -w "%{http_code}" http://localhost:6006
+# 200
+```
+
+### 2. Start cc-proxy with OTLP enabled
+
+Use `cc-proxy.local.toml` which has `otlp_endpoint = "http://localhost:4317"` configured:
+
+```bash
+tmux new-session -d -s cc-proxy
+tmux send-keys -t cc-proxy 'cd /Users/mkosec/work/cc-proxy-tracing && ./target/release/cc-proxy --config cc-proxy.local.toml --target-url https://<glm-endpoint> --model glm-5-fp8' Enter
+```
+
+Confirm OTLP connected — proxy logs should show:
+```
+INFO cc_tracing::otlp: OpenTelemetry OTLP tracing initialized endpoint=http://localhost:4317
+```
+
+### 3. Send traffic and inspect traces
+
+Open the Phoenix UI at **http://localhost:6006** to browse spans. Each `proxy_request` root span includes `ttft_ms`, `total_duration_ms`, token counts, and full message I/O.
+
+### 4. Export traces programmatically
+
+```python
+# uv run --with arize-phoenix python3 export_traces.py
+import phoenix as px
+import json
+
+client = px.Client(endpoint="http://localhost:6006")
+df = client.get_spans_dataframe(project_name="default")
+
+root = df[df["name"] == "proxy_request"]
+root.to_json("traces.json", orient="records", date_format="iso", indent=2)
+print(f"Exported {len(root)} traces")
+```
+
 ## Docker
 
 Multi-stage build with `rust:1.82` builder and `debian:bookworm-slim` runtime. Exposes port 3080.
