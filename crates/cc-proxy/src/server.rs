@@ -11,7 +11,7 @@ use axum::Router;
 use bytes::Bytes;
 use tracing::Instrument;
 
-use crate::config::ProxyConfig;
+use crate::config::{ProxyConfig, TargetConfig};
 use crate::mode::{ProxyMode, RuntimeMode};
 use crate::openinference;
 use crate::proxy::correlation;
@@ -68,16 +68,7 @@ async fn handle_messages(
 ) -> Response {
     let correlation_id = correlation::generate_id();
 
-    // Rewrite request body: model override + max_tokens default
-    let body = match rewrite_request_body(&body, state.config.model_override.as_deref()) {
-        Ok(rewritten) => rewritten,
-        Err(e) => {
-            tracing::warn!(error = %e, "Failed to rewrite request body, forwarding unchanged");
-            body
-        }
-    };
-
-    // Parse the (possibly rewritten) request body as untyped JSON — resilient
+    // Parse the original request body as untyped JSON — resilient
     // to unknown content block types (thinking, citations, server_tool_use, etc.)
     let parsed: Option<serde_json::Value> = serde_json::from_slice(&body).ok();
 
@@ -107,17 +98,31 @@ async fn handle_messages(
     // Increment request counter
     state.stats.inc_requests();
 
+    // Build rewritten body for target traffic only (model override + target defaults).
+    // Passthrough to Anthropic always uses the original unmodified body.
+    let target_body = match rewrite_target_body(
+        &body,
+        state.config.model_override.as_deref(),
+        &state.config.target,
+    ) {
+        Ok(rewritten) => rewritten,
+        Err(e) => {
+            tracing::warn!(error = %e, "Failed to rewrite target body, forwarding unchanged");
+            body.clone()
+        }
+    };
+
     async {
         let current_mode = state.mode.get();
 
         match current_mode {
             ProxyMode::TargetOnly => {
-                // Forward request directly to the target endpoint
+                // Forward rewritten request directly to the target endpoint
                 return primary::forward_to_target(
                     &state.primary_client,
                     state.config.target.url.as_deref().unwrap_or(""),
                     &headers,
-                    body,
+                    target_body,
                     &correlation_id,
                     is_streaming,
                     tracing::Span::current(),
@@ -126,8 +131,8 @@ async fn handle_messages(
                 .await;
             }
             ProxyMode::Compare => {
-                // Fire-and-forget compare request to target, then forward to Anthropic
-                state.compare_dispatcher.dispatch(body.clone(), correlation_id.clone());
+                // Fire-and-forget compare request to target with rewritten body
+                state.compare_dispatcher.dispatch(target_body, correlation_id.clone());
             }
             ProxyMode::AnthropicOnly => {
                 // Check if anthropic-only mode is allowed
@@ -143,7 +148,7 @@ async fn handle_messages(
             }
         }
 
-        // Forward to Anthropic (blocking, returns the streaming response)
+        // Forward original unmodified body to Anthropic
         let url = format!("{}/v1/messages", state.config.passthrough.url);
 
         // Pass the root span so TeeBody can set response attributes on it
@@ -166,14 +171,17 @@ async fn handle_messages(
     .await
 }
 
-/// Rewrite fields in a JSON request body before forwarding.
+/// Rewrite fields in a JSON request body for target traffic only.
 ///
 /// - Replaces `model` with `new_model` (if Some)
-/// - Sets `max_tokens` to 65536 if absent or null
+/// - Sets `max_tokens`, `temperature`, `top_p` from target config defaults (if absent in request)
 ///
-/// Uses `serde_json::Value` for a minimal parse-and-patch so that all other
-/// fields (including unknown/future ones) are preserved exactly.
-fn rewrite_request_body(body: &Bytes, new_model: Option<&str>) -> Result<Bytes, serde_json::Error> {
+/// Passthrough traffic to Anthropic should use the original unmodified body.
+fn rewrite_target_body(
+    body: &Bytes,
+    new_model: Option<&str>,
+    target: &TargetConfig,
+) -> Result<Bytes, serde_json::Error> {
     let mut value: serde_json::Value = serde_json::from_slice(body)?;
     if let Some(obj) = value.as_object_mut() {
         if let Some(model) = new_model {
@@ -182,12 +190,29 @@ fn rewrite_request_body(body: &Bytes, new_model: Option<&str>) -> Result<Bytes, 
                 serde_json::Value::String(model.to_string()),
             );
         }
-        // Default max_tokens to 65536 if not set (ZAI recommends 65536 for coding)
-        if !obj.contains_key("max_tokens") || obj.get("max_tokens").is_some_and(|v| v.is_null()) {
-            obj.insert(
-                "max_tokens".to_string(),
-                serde_json::Value::Number(65536.into()),
-            );
+        if let Some(max_tokens) = target.max_tokens {
+            if !obj.contains_key("max_tokens") || obj.get("max_tokens").is_some_and(|v| v.is_null()) {
+                obj.insert(
+                    "max_tokens".to_string(),
+                    serde_json::Value::Number(max_tokens.into()),
+                );
+            }
+        }
+        if let Some(temperature) = target.temperature {
+            if !obj.contains_key("temperature") {
+                obj.insert(
+                    "temperature".to_string(),
+                    serde_json::json!(temperature),
+                );
+            }
+        }
+        if let Some(top_p) = target.top_p {
+            if !obj.contains_key("top_p") {
+                obj.insert(
+                    "top_p".to_string(),
+                    serde_json::json!(top_p),
+                );
+            }
         }
     }
     let rewritten = serde_json::to_vec(&value)?;
