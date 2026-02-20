@@ -170,8 +170,6 @@ async fn handle_messages(
 ///
 /// - Replaces `model` with `new_model` (if Some)
 /// - Sets `max_tokens` to 65536 if absent or null
-/// - Sets `temperature` to 1.0 if absent
-/// - Sets `top_p` to 0.95 if absent
 ///
 /// Uses `serde_json::Value` for a minimal parse-and-patch so that all other
 /// fields (including unknown/future ones) are preserved exactly.
@@ -189,20 +187,6 @@ fn rewrite_request_body(body: &Bytes, new_model: Option<&str>) -> Result<Bytes, 
             obj.insert(
                 "max_tokens".to_string(),
                 serde_json::Value::Number(65536.into()),
-            );
-        }
-        // Default temperature to 1.0 if not set (ZAI recommends 1.0 for coding)
-        if !obj.contains_key("temperature") {
-            obj.insert(
-                "temperature".to_string(),
-                serde_json::json!(1.0),
-            );
-        }
-        // Default top_p to 0.95 if not set (ZAI recommends 0.95 for coding)
-        if !obj.contains_key("top_p") {
-            obj.insert(
-                "top_p".to_string(),
-                serde_json::json!(0.95),
             );
         }
     }
