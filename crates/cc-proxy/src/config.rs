@@ -58,6 +58,15 @@ pub struct TargetConfig {
 
     #[serde(default = "default_max_concurrent")]
     pub max_concurrent: usize,
+
+    /// Optional default temperature for target requests (applied if absent in request).
+    pub temperature: Option<f64>,
+
+    /// Optional default top_p for target requests (applied if absent in request).
+    pub top_p: Option<f64>,
+
+    /// Optional default max_tokens for target requests (applied if absent/null in request).
+    pub max_tokens: Option<u64>,
 }
 
 fn default_mode() -> String {
