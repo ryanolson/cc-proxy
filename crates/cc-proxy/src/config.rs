@@ -1,9 +1,9 @@
 //! Configuration types and loading logic.
 
+use cc_tracing::TracingConfig;
 use figment::providers::{Env, Format, Toml};
 use figment::Figment;
 use serde::Deserialize;
-use cc_tracing::TracingConfig;
 
 /// Top-level proxy configuration.
 #[derive(Debug, Clone, Deserialize)]

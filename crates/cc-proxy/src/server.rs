@@ -14,9 +14,9 @@ use tracing::Instrument;
 use crate::config::{ProxyConfig, TargetConfig};
 use crate::mode::{ProxyMode, RuntimeMode};
 use crate::openinference;
+use crate::proxy::compare::CompareDispatcher;
 use crate::proxy::correlation;
 use crate::proxy::primary;
-use crate::proxy::compare::CompareDispatcher;
 use crate::stats::ProxyStats;
 
 /// Shared application state.
@@ -39,7 +39,10 @@ pub async fn run(state: AppState) -> anyhow::Result<()> {
         .route("/health", get(handle_health))
         .route("/api/stats", get(handle_get_stats))
         .route("/api/mode", get(handle_get_mode).put(handle_set_mode))
-        .route("/api/tracing", get(handle_get_tracing).put(handle_set_tracing))
+        .route(
+            "/api/tracing",
+            get(handle_get_tracing).put(handle_set_tracing),
+        )
         .fallback(handle_fallback)
         .with_state(Arc::new(state));
 
@@ -191,7 +194,8 @@ fn rewrite_target_body(
             );
         }
         if let Some(max_tokens) = target.max_tokens {
-            if !obj.contains_key("max_tokens") || obj.get("max_tokens").is_some_and(|v| v.is_null()) {
+            if !obj.contains_key("max_tokens") || obj.get("max_tokens").is_some_and(|v| v.is_null())
+            {
                 obj.insert(
                     "max_tokens".to_string(),
                     serde_json::Value::Number(max_tokens.into()),
@@ -200,18 +204,12 @@ fn rewrite_target_body(
         }
         if let Some(temperature) = target.temperature {
             if !obj.contains_key("temperature") {
-                obj.insert(
-                    "temperature".to_string(),
-                    serde_json::json!(temperature),
-                );
+                obj.insert("temperature".to_string(), serde_json::json!(temperature));
             }
         }
         if let Some(top_p) = target.top_p {
             if !obj.contains_key("top_p") {
-                obj.insert(
-                    "top_p".to_string(),
-                    serde_json::json!(top_p),
-                );
+                obj.insert("top_p".to_string(), serde_json::json!(top_p));
             }
         }
     }
@@ -288,18 +286,19 @@ async fn handle_set_mode(
         }
     };
 
-    let mode: ProxyMode = match serde_json::from_value(serde_json::Value::String(mode_str.to_string())) {
-        Ok(m) => m,
-        Err(_) => {
-            return (
-                StatusCode::BAD_REQUEST,
-                axum::Json(serde_json::json!({
-                    "error": "invalid mode, expected: target, compare, or anthropic-only"
-                })),
-            )
-                .into_response();
-        }
-    };
+    let mode: ProxyMode =
+        match serde_json::from_value(serde_json::Value::String(mode_str.to_string())) {
+            Ok(m) => m,
+            Err(_) => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    axum::Json(serde_json::json!({
+                        "error": "invalid mode, expected: target, compare, or anthropic-only"
+                    })),
+                )
+                    .into_response();
+            }
+        };
 
     // Block anthropic-only mode unless explicitly allowed at launch
     if mode == ProxyMode::AnthropicOnly && !state.config.anthropic_only_allowed {
