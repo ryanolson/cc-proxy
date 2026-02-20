@@ -40,6 +40,7 @@ pub struct PassthroughConfig {
     pub url: String,
 
     #[serde(default = "default_true")]
+    #[allow(dead_code)]
     pub passthrough_auth: bool,
 
     #[serde(default = "default_timeout")]
