@@ -55,17 +55,20 @@ Modes can be toggled at runtime via `PUT /api/mode` without restart. `anthropic-
 ### Request Flow
 
 1. `POST /v1/messages` arrives → `server.rs` generates correlation ID (UUID v4)
-2. `rewrite_request_body`: applies `--model` override (if set), sets default `max_tokens`/`temperature`/`top_p`
-3. Checks runtime mode:
-   - **`target`** (default): Forward raw bytes to `target_url/v1/messages`, return response directly
-   - **`compare`**: Forward to passthrough upstream (synchronous) + fire-and-forget raw bytes to target for logging
-   - **`anthropic-only`**: Forward to passthrough upstream only (gated behind `--allow-anthropic-only`)
-4. **Catch-all fallback**: Unmatched routes forwarded to passthrough upstream unchanged (any HTTP method).
+2. Original request body is preserved for passthrough (Anthropic) traffic
+3. `rewrite_target_body`: builds a separate body for target traffic only — applies `--model` override (if set) and optional `[target]` defaults (`max_tokens`/`temperature`/`top_p` from config)
+4. Checks runtime mode:
+   - **`target`** (default): Forward rewritten body to `target_url/v1/messages`, return response directly
+   - **`compare`**: Forward original unmodified body to passthrough upstream (synchronous, returned to client) + fire-and-forget rewritten body to target for logging
+   - **`anthropic-only`**: Forward original body to passthrough upstream only (gated behind `--allow-anthropic-only`)
+5. **Catch-all fallback**: Unmatched routes forwarded to passthrough upstream unchanged (any HTTP method).
+
+**Important**: Body rewrites (model override, temperature, top_p, max_tokens defaults) are only applied to target-bound traffic. Passthrough traffic to Anthropic always receives the original unmodified request body. This prevents issues like Anthropic rejecting requests where both `temperature` and `top_p` are set.
 
 ### Key Modules (cc-proxy crate)
 
-- `config.rs` — `ProxyConfig` with `[target]`, `[passthrough]`, `[server]`, `[tracing]` sections
-- `server.rs` — Axum routes, `AppState`, body rewriting, mode dispatch
+- `config.rs` — `ProxyConfig` with `[target]`, `[passthrough]`, `[server]`, `[tracing]` sections. `TargetConfig` includes optional `temperature`, `top_p`, `max_tokens` defaults.
+- `server.rs` — Axum routes, `AppState`, target body rewriting (`rewrite_target_body`), mode dispatch. Keeps original body for passthrough, applies rewrites only to target traffic.
 - `proxy/primary.rs` — Zero-fidelity byte forwarding (`forward_to_anthropic`, `forward_to_target`, `forward_raw`)
 - `proxy/compare.rs` — `CompareDispatcher`: fire-and-forget Anthropic-format POST to target URL
 - `proxy/correlation.rs` — `x-shadow-request-id` header, UUID generation
@@ -81,9 +84,10 @@ Modes can be toggled at runtime via `PUT /api/mode` without restart. `anthropic-
 
 - **`target` mode is the primary path** — passthrough (Anthropic) is only used in `compare`/`anthropic-only`
 - `--target-url` and `--model` are CLI-only — not stored in config files, no secrets in TOML
-- `--model` override applies to ALL requests including subagents (Haiku/Sonnet rewritten at request boundary)
+- `--model` override applies only to target-bound traffic; passthrough to Anthropic receives the original model
 - `anthropic-only` mode requires explicit opt-in at launch (`--allow-anthropic-only`)
-- Compare dispatch uses same rewritten bytes as target path — no conversion needed
+- Compare dispatch uses the rewritten target body; passthrough receives the original unmodified body
+- Optional `[target]` config fields (`temperature`, `top_p`, `max_tokens`) are only injected into target requests if set and absent from the original request
 
 ## Configuration
 
@@ -98,6 +102,11 @@ listen_address = "0.0.0.0:3080"
 # url set via --target-url (not stored here — no secrets in config)
 timeout_secs = 300
 max_concurrent = 50
+# Optional defaults — only applied to target-bound requests, not passthrough.
+# Omit to pass through the original request values unchanged.
+# temperature = 1.0
+# top_p = 0.95
+# max_tokens = 65536
 
 [passthrough]
 # Used only in `compare` and `anthropic-only` modes (requires --allow-anthropic-only)
@@ -155,8 +164,9 @@ unset CLAUDECODE && ANTHROPIC_BASE_URL=http://localhost:3080 claude --model glm-
 - `ANTHROPIC_BASE_URL` redirects all Claude Code traffic through the proxy
 
 **3. Validate model override:**
-- Send a prompt — proxy logs should show `original_model=glm-5-fp8` and `target=vvagias-glm5.stg.astra.nvidia.com`
-- Send an Explore prompt — this triggers parallel Haiku subagent calls; proxy logs must show all of them with `original_model=glm-5-fp8` (never `claude-haiku-*`)
+- Send a prompt — proxy logs should show `original_model` reflecting the client's requested model
+- In `compare` mode, the target receives the `--model` override while passthrough receives the original model
+- Send an Explore prompt — this triggers parallel Haiku subagent calls; in `target` mode all are rewritten to `--model`; in `compare` mode subagent calls go to Anthropic with original models
 
 **4. Verify no Anthropic leakage:**
 - Proxy logs must contain only `proxy_request` / `primary_forward` entries
@@ -172,8 +182,10 @@ curl -s http://localhost:3080/api/stats | python3 -m json.tool
 
 **Known behaviour:**
 - `unset CLAUDECODE` is required when launching from inside an existing Claude Code session — without it the CLI refuses to start
-- `--model glm-5-fp8` on the `claude` command sets the *initial* model; `--model` on the proxy rewrites ALL requests including subagents — both are needed
+- `--model glm-5-fp8` on the `claude` command sets the *initial* model; `--model` on the proxy rewrites target-bound requests only
+- In `compare` mode, passthrough traffic goes to Anthropic with the original request body (original model, no injected temperature/top_p/max_tokens)
 - GLM reports `input_tokens` in the `message_delta` SSE event, not `message_start` (unlike Anthropic)
+- Target models with small context windows (e.g. Qwen3-0.6B at 40k tokens) will fail on large Claude Code conversations (commonly 60k-70k+ tokens). The Dynamo frontend may return HTTP 200 and fail mid-stream (SSE) rather than returning a proper 400.
 
 ## Tracing with Phoenix
 
