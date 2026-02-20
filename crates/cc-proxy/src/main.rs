@@ -21,18 +21,21 @@ use stats::ProxyStats;
 fn main() -> anyhow::Result<()> {
     // Parse CLI args
     let args: Vec<String> = std::env::args().collect();
-    let config_path = args.iter()
+    let config_path = args
+        .iter()
         .position(|a| a == "--config")
         .and_then(|i| args.get(i + 1).cloned())
         .or_else(|| args.get(1).filter(|a| !a.starts_with('-')).cloned())
         .or_else(|| std::env::var("CC_PROXY_CONFIG").ok())
         .unwrap_or_else(|| "cc-proxy.toml".to_string());
 
-    let target_url_override = args.iter()
+    let target_url_override = args
+        .iter()
         .position(|a| a == "--target-url")
         .and_then(|i| args.get(i + 1).cloned());
 
-    let model_override = args.iter()
+    let model_override = args
+        .iter()
         .position(|a| a == "--model")
         .and_then(|i| args.get(i + 1).cloned());
 

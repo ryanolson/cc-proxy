@@ -160,6 +160,7 @@ pub fn set_request_attributes(span: &Span, req: &serde_json::Value) {
 ///
 /// The shadow request has already been converted from Anthropic to OpenAI format,
 /// so the message structure is `{role, content}` with optional `tool_calls`.
+#[allow(dead_code)]
 pub fn set_shadow_request_attributes(span: &Span, req: &serde_json::Value) {
     set_str(span, "openinference.span.kind", "LLM");
 
@@ -235,6 +236,7 @@ pub fn set_shadow_request_attributes(span: &Span, req: &serde_json::Value) {
 /// Set OpenInference response attributes on a shadow span from an OpenAI-format response.
 ///
 /// Shadow responses are always non-streaming OpenAI chat completions.
+#[allow(dead_code)]
 pub fn set_shadow_response_attributes(span: &Span, response_body: &str) {
     let body: serde_json::Value = match serde_json::from_str(response_body) {
         Ok(v) => v,

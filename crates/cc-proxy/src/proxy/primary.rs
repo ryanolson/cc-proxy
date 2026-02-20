@@ -65,7 +65,8 @@ impl Stream for TeeBody {
                 // upstream byte arrives after the request was sent.
                 if !self.first_chunk_seen {
                     self.first_chunk_seen = true;
-                    self.span.record("ttft_ms", self.start.elapsed().as_millis() as u64);
+                    self.span
+                        .record("ttft_ms", self.start.elapsed().as_millis() as u64);
                 }
                 if let Ok(mut buf) = self.buffer.lock() {
                     buf.extend_from_slice(&chunk);
@@ -75,7 +76,8 @@ impl Stream for TeeBody {
             Poll::Ready(Some(Err(e))) => Poll::Ready(Some(Err(e))),
             Poll::Ready(None) => {
                 // Record total end-to-end streaming duration (request sent → last byte).
-                self.span.record("total_duration_ms", self.start.elapsed().as_millis() as u64);
+                self.span
+                    .record("total_duration_ms", self.start.elapsed().as_millis() as u64);
 
                 // Stream complete — set response attributes
                 if let Ok(buf) = self.buffer.lock() {
@@ -108,7 +110,12 @@ pub async fn forward_to_anthropic(
     root_span: tracing::Span,
     stats: ProxyStats,
 ) -> Response {
-    let host = url.trim_start_matches("https://").trim_start_matches("http://").split('/').next().unwrap_or(url);
+    let host = url
+        .trim_start_matches("https://")
+        .trim_start_matches("http://")
+        .split('/')
+        .next()
+        .unwrap_or(url);
     let span = cc_tracing::primary_forward_span!(correlation_id, host);
     let start = Instant::now();
 
@@ -171,7 +178,12 @@ pub async fn forward_to_target(
     stats: ProxyStats,
 ) -> Response {
     let url = format!("{}/v1/messages", target_base_url);
-    let host = target_base_url.trim_start_matches("https://").trim_start_matches("http://").split('/').next().unwrap_or(target_base_url);
+    let host = target_base_url
+        .trim_start_matches("https://")
+        .trim_start_matches("http://")
+        .split('/')
+        .next()
+        .unwrap_or(target_base_url);
     let span = cc_tracing::primary_forward_span!(correlation_id, host);
     let start = Instant::now();
 
@@ -323,7 +335,8 @@ fn build_response(
     );
 
     // Capture upstream request ID (Anthropic sets x-request-id; targets may too)
-    if let Some(req_id) = upstream_resp.headers()
+    if let Some(req_id) = upstream_resp
+        .headers()
         .get("x-request-id")
         .and_then(|v| v.to_str().ok())
     {
