@@ -1,9 +1,9 @@
 //! Configuration types and loading logic.
 
+use cc_tracing::TracingConfig;
 use figment::providers::{Env, Format, Toml};
 use figment::Figment;
 use serde::Deserialize;
-use cc_tracing::TracingConfig;
 
 /// Top-level proxy configuration.
 #[derive(Debug, Clone, Deserialize)]
@@ -40,6 +40,7 @@ pub struct PassthroughConfig {
     pub url: String,
 
     #[serde(default = "default_true")]
+    #[allow(dead_code)]
     pub passthrough_auth: bool,
 
     #[serde(default = "default_timeout")]
@@ -58,6 +59,15 @@ pub struct TargetConfig {
 
     #[serde(default = "default_max_concurrent")]
     pub max_concurrent: usize,
+
+    /// Optional default temperature for target requests (applied if absent in request).
+    pub temperature: Option<f64>,
+
+    /// Optional default top_p for target requests (applied if absent in request).
+    pub top_p: Option<f64>,
+
+    /// Optional default max_tokens for target requests (applied if absent/null in request).
+    pub max_tokens: Option<u64>,
 }
 
 fn default_mode() -> String {
