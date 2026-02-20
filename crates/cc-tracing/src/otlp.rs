@@ -82,7 +82,11 @@ pub fn init_tracing(config: &TracingConfig) -> TracingGuard {
 
 /// Try to initialize tracing with OTLP export. Returns Err if the exporter
 /// cannot be built.
-fn try_init_with_otlp(config: &TracingConfig, endpoint: &str, env_filter: EnvFilter) -> Result<TracingGuard> {
+fn try_init_with_otlp(
+    config: &TracingConfig,
+    endpoint: &str,
+    env_filter: EnvFilter,
+) -> Result<TracingGuard> {
     // Build OTLP exporter
     let otlp_exporter = match config.protocol {
         OtlpProtocol::Grpc => opentelemetry_otlp::SpanExporter::builder()

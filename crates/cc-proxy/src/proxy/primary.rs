@@ -108,7 +108,12 @@ pub async fn forward_to_anthropic(
     root_span: tracing::Span,
     stats: ProxyStats,
 ) -> Response {
-    let host = url.trim_start_matches("https://").trim_start_matches("http://").split('/').next().unwrap_or(url);
+    let host = url
+        .trim_start_matches("https://")
+        .trim_start_matches("http://")
+        .split('/')
+        .next()
+        .unwrap_or(url);
     let span = cc_tracing::primary_forward_span!(correlation_id, host);
     let start = Instant::now();
 
@@ -171,7 +176,12 @@ pub async fn forward_to_target(
     stats: ProxyStats,
 ) -> Response {
     let url = format!("{}/v1/messages", target_base_url);
-    let host = target_base_url.trim_start_matches("https://").trim_start_matches("http://").split('/').next().unwrap_or(target_base_url);
+    let host = target_base_url
+        .trim_start_matches("https://")
+        .trim_start_matches("http://")
+        .split('/')
+        .next()
+        .unwrap_or(target_base_url);
     let span = cc_tracing::primary_forward_span!(correlation_id, host);
     let start = Instant::now();
 
