@@ -424,8 +424,18 @@ fn build_response_simple(
 }
 
 /// Extract token usage and tool call counts from the Anthropic response and record to stats.
-fn extract_and_record_stats(stats: &ProxyStats, response_bytes: &[u8], is_streaming: bool) {
-    if is_streaming {
+///
+/// Detects the response format from the content itself rather than trusting the
+/// request's `stream` flag — some targets return plain JSON even when `stream=true`
+/// was requested, and vice versa. SSE responses always contain `event:` lines;
+/// non-streaming responses are plain JSON objects.
+fn extract_and_record_stats(stats: &ProxyStats, response_bytes: &[u8], _is_streaming: bool) {
+    // Sniff the content: SSE streams start with "event: " lines, JSON starts with '{'
+    let looks_like_sse = response_bytes
+        .windows(7)
+        .any(|w| w == b"event: ");
+
+    if looks_like_sse {
         extract_streaming_stats(stats, response_bytes);
     } else {
         extract_nonstreaming_stats(stats, response_bytes);
