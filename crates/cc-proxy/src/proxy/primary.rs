@@ -505,8 +505,10 @@ fn extract_streaming_stats(stats: &ProxyStats, response_bytes: &[u8]) {
             Some("message_start") => {
                 if let Some(usage) = data.get("message").and_then(|m| m.get("usage")) {
                     if let Some(input) = usage.get("input_tokens").and_then(|v| v.as_u64()) {
-                        stats.add_input_tokens(input);
-                        input_tokens_seen = true;
+                        if input > 0 {
+                            stats.add_input_tokens(input);
+                            input_tokens_seen = true;
+                        }
                     }
                 }
             }
@@ -515,12 +517,15 @@ fn extract_streaming_stats(stats: &ProxyStats, response_bytes: &[u8]) {
                     if let Some(output) = usage.get("output_tokens").and_then(|v| v.as_u64()) {
                         stats.add_output_tokens(output);
                     }
-                    // Fallback: some targets (e.g. some targets) report input_tokens here
-                    // instead of message_start. Only record if not already seen.
+                    // Fallback: some targets (e.g. some targets) send input_tokens: 0 in
+                    // message_start and the real count in message_delta. Only
+                    // record if we haven't seen a non-zero value already.
                     if !input_tokens_seen {
                         if let Some(input) = usage.get("input_tokens").and_then(|v| v.as_u64()) {
-                            stats.add_input_tokens(input);
-                            input_tokens_seen = true;
+                            if input > 0 {
+                                stats.add_input_tokens(input);
+                                input_tokens_seen = true;
+                            }
                         }
                     }
                 }
