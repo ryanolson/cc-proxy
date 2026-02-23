@@ -5,6 +5,8 @@ use figment::providers::{Env, Format, Toml};
 use figment::Figment;
 use serde::Deserialize;
 
+use crate::models::ModelDef;
+
 /// Top-level proxy configuration.
 #[derive(Debug, Clone, Deserialize)]
 pub struct ProxyConfig {
@@ -24,6 +26,10 @@ pub struct ProxyConfig {
     /// Set via CLI `--allow-anthropic-only`, not from TOML.
     #[serde(skip)]
     pub anthropic_only_allowed: bool,
+
+    /// Locally-served model definitions from `[[models]]` in TOML.
+    #[serde(default)]
+    pub models: Vec<ModelDef>,
 }
 
 /// Server listen configuration.

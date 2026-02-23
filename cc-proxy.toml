@@ -18,3 +18,10 @@ passthrough_auth = true
 service_name = "cc-proxy"
 # otlp_endpoint = "http://localhost:4317"  # optional, omit to disable
 log_level = "info"
+
+# Local models — requests matching these model IDs route to target_url
+# instead of Anthropic passthrough. Models without target_url use --target-url.
+# [[models]]
+# id = "glm-5-fp8"
+# display_name = "GLM-5 FP8"
+# target_url = "https://vvagias-glm5.stg.astra.nvidia.com"

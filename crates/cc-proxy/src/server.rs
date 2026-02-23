@@ -3,7 +3,7 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
-use axum::extract::{Request, State};
+use axum::extract::{Path, Request, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
@@ -13,6 +13,7 @@ use tracing::Instrument;
 
 use crate::config::{ProxyConfig, TargetConfig};
 use crate::mode::{ProxyMode, RuntimeMode};
+use crate::models::{ModelRegistry, RouteTarget};
 use crate::openinference;
 use crate::proxy::compare::CompareDispatcher;
 use crate::proxy::correlation;
@@ -27,6 +28,7 @@ pub struct AppState {
     pub compare_dispatcher: CompareDispatcher,
     pub stats: ProxyStats,
     pub mode: RuntimeMode,
+    pub model_registry: ModelRegistry,
     pub tracing_enabled: Arc<AtomicBool>,
 }
 
@@ -36,6 +38,8 @@ pub async fn run(state: AppState) -> anyhow::Result<()> {
 
     let app = Router::new()
         .route("/v1/messages", post(handle_messages))
+        .route("/v1/models", get(handle_list_models))
+        .route("/v1/models/{model_id}", get(handle_get_model))
         .route("/health", get(handle_health))
         .route("/api/stats", get(handle_get_stats))
         .route("/api/mode", get(handle_get_mode).put(handle_set_mode))
@@ -59,11 +63,16 @@ pub async fn run(state: AppState) -> anyhow::Result<()> {
 
 /// Main handler for POST /v1/messages.
 ///
-/// 1. Generate correlation ID
-/// 2. Optionally rewrite the model field (if `model_override` is configured)
-/// 3. Clone body for shadow dispatch
-/// 4. Fire-and-forget shadow requests
-/// 5. Forward original request to Anthropic and stream response back
+/// Routing is model-based:
+/// 1. Extract model name from request body
+/// 2. Resolve via ModelRegistry → Local or Anthropic
+/// 3. Local models: apply target defaults, forward to target URL
+/// 4. Anthropic models: forward body as-is to Anthropic passthrough
+///
+/// The runtime mode modifies behavior:
+/// - `target` (default): model-based routing as above
+/// - `compare`: model-based routing for primary + shadow to target for Anthropic requests
+/// - `anthropic-only`: ALL requests → Anthropic (rejects local model requests)
 async fn handle_messages(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
@@ -101,29 +110,64 @@ async fn handle_messages(
     // Increment request counter
     state.stats.inc_requests();
 
-    // Build rewritten body for target traffic only (model override + target defaults).
-    // Passthrough to Anthropic always uses the original unmodified body.
-    let target_body = match rewrite_target_body(
-        &body,
-        state.config.model_override.as_deref(),
-        &state.config.target,
-    ) {
-        Ok(rewritten) => rewritten,
-        Err(e) => {
-            tracing::warn!(error = %e, "Failed to rewrite target body, forwarding unchanged");
-            body.clone()
-        }
-    };
-
     async {
         let current_mode = state.mode.get();
 
-        match current_mode {
-            ProxyMode::TargetOnly => {
-                // Forward rewritten request directly to the target endpoint
-                return primary::forward_to_target(
+        // In anthropic-only mode, reject requests for local models
+        if current_mode == ProxyMode::AnthropicOnly {
+            if let RouteTarget::Local { .. } = state.model_registry.resolve(&model) {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    axum::Json(serde_json::json!({
+                        "error": format!(
+                            "Model '{}' is a local model but proxy is in anthropic-only mode. \
+                             Use an Anthropic model or switch proxy mode.",
+                            model
+                        )
+                    })),
+                )
+                    .into_response();
+            }
+
+            // Check if anthropic-only mode is allowed
+            if !state.config.anthropic_only_allowed {
+                return (
+                    StatusCode::FORBIDDEN,
+                    axum::Json(serde_json::json!({
+                        "error": "anthropic-only mode is not enabled; restart with --allow-anthropic-only"
+                    })),
+                )
+                    .into_response();
+            }
+        }
+
+        // Resolve routing target from model name
+        let route = state.model_registry.resolve(&model);
+
+        match route {
+            RouteTarget::Local { target_url, .. } => {
+                // Build rewritten body for local target (apply model override + target defaults)
+                let target_body = match apply_local_defaults(
+                    &body,
+                    state.config.model_override.as_deref(),
+                    &state.config.target,
+                ) {
+                    Ok(rewritten) => rewritten,
+                    Err(e) => {
+                        tracing::warn!(error = %e, "Failed to rewrite target body, forwarding unchanged");
+                        body.clone()
+                    }
+                };
+
+                tracing::info!(
+                    model = %model,
+                    target_url = %target_url,
+                    "Routing to local model"
+                );
+
+                primary::forward_to_target(
                     &state.primary_client,
-                    state.config.target.url.as_deref().unwrap_or(""),
+                    &target_url,
                     &headers,
                     target_body,
                     &correlation_id,
@@ -131,56 +175,61 @@ async fn handle_messages(
                     tracing::Span::current(),
                     state.stats.clone(),
                 )
-                .await;
+                .await
             }
-            ProxyMode::Compare => {
-                // Fire-and-forget compare request to target with rewritten body
-                state.compare_dispatcher.dispatch(target_body, correlation_id.clone());
-            }
-            ProxyMode::AnthropicOnly => {
-                // Check if anthropic-only mode is allowed
-                if !state.config.anthropic_only_allowed {
-                    return (
-                        StatusCode::FORBIDDEN,
-                        axum::Json(serde_json::json!({
-                            "error": "anthropic-only mode is not enabled; restart with --allow-anthropic-only"
-                        })),
-                    )
-                        .into_response();
+            RouteTarget::Anthropic => {
+                // In compare mode, also fire-and-forget to the default target
+                if current_mode == ProxyMode::Compare {
+                    let target_body = match apply_local_defaults(
+                        &body,
+                        state.config.model_override.as_deref(),
+                        &state.config.target,
+                    ) {
+                        Ok(rewritten) => rewritten,
+                        Err(e) => {
+                            tracing::warn!(error = %e, "Failed to rewrite target body for compare");
+                            body.clone()
+                        }
+                    };
+                    state
+                        .compare_dispatcher
+                        .dispatch(target_body, correlation_id.clone());
                 }
+
+                // Forward original unmodified body to Anthropic
+                let url = format!("{}/v1/messages", state.config.passthrough.url);
+
+                tracing::info!(
+                    model = %model,
+                    "Routing to Anthropic"
+                );
+
+                let root_span = tracing::Span::current();
+                primary::forward_to_anthropic(
+                    &state.primary_client,
+                    &url,
+                    &headers,
+                    body,
+                    &correlation_id,
+                    is_streaming,
+                    root_span,
+                    state.stats.clone(),
+                )
+                .await
             }
         }
-
-        // Forward original unmodified body to Anthropic
-        let url = format!("{}/v1/messages", state.config.passthrough.url);
-
-        // Pass the root span so TeeBody can set response attributes on it
-        // when streaming completes, keeping the span open until then.
-        let root_span = tracing::Span::current();
-
-        primary::forward_to_anthropic(
-            &state.primary_client,
-            &url,
-            &headers,
-            body,
-            &correlation_id,
-            is_streaming,
-            root_span,
-            state.stats.clone(),
-        )
-        .await
     }
     .instrument(span)
     .await
 }
 
-/// Rewrite fields in a JSON request body for target traffic only.
+/// Apply model override and target config defaults to a request body.
 ///
 /// - Replaces `model` with `new_model` (if Some)
 /// - Sets `max_tokens`, `temperature`, `top_p` from target config defaults (if absent in request)
 ///
-/// Passthrough traffic to Anthropic should use the original unmodified body.
-fn rewrite_target_body(
+/// Only used for local-model-bound traffic. Anthropic passthrough uses the original body.
+fn apply_local_defaults(
     body: &Bytes,
     new_model: Option<&str>,
     target: &TargetConfig,
@@ -215,6 +264,111 @@ fn rewrite_target_body(
     }
     let rewritten = serde_json::to_vec(&value)?;
     Ok(Bytes::from(rewritten))
+}
+
+/// GET /v1/models — list available models.
+///
+/// Returns locally-registered models from the ModelRegistry. Merges with
+/// Anthropic's model list when passthrough is available (best-effort, 5s timeout).
+async fn handle_list_models(State(state): State<Arc<AppState>>) -> Response {
+    let local_models = state.model_registry.list_models();
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+
+    let mut data: Vec<serde_json::Value> = local_models
+        .iter()
+        .map(|m| {
+            serde_json::json!({
+                "id": m.id,
+                "display_name": m.display_name.as_deref().unwrap_or(&m.id),
+                "type": "model",
+                "created_at": now,
+            })
+        })
+        .collect();
+
+    // Best-effort: merge Anthropic's model list (5s timeout)
+    if let Ok(anthropic_models) = fetch_anthropic_models(&state).await {
+        data.extend(anthropic_models);
+    }
+
+    let first_id = data.first().and_then(|d| d.get("id").and_then(|v| v.as_str().map(String::from)));
+    let last_id = data.last().and_then(|d| d.get("id").and_then(|v| v.as_str().map(String::from)));
+
+    axum::Json(serde_json::json!({
+        "data": data,
+        "has_more": false,
+        "first_id": first_id,
+        "last_id": last_id,
+    }))
+    .into_response()
+}
+
+/// GET /v1/models/:model_id — get a specific model.
+async fn handle_get_model(
+    State(state): State<Arc<AppState>>,
+    Path(model_id): Path<String>,
+) -> Response {
+    // Check local registry first
+    let local_models = state.model_registry.list_models();
+    if let Some(m) = local_models.iter().find(|m| m.id == model_id) {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        return axum::Json(serde_json::json!({
+            "id": m.id,
+            "display_name": m.display_name.as_deref().unwrap_or(&m.id),
+            "type": "model",
+            "created_at": now,
+        }))
+        .into_response();
+    }
+
+    // Try Anthropic
+    let url = format!("{}/v1/models/{}", state.config.passthrough.url, model_id);
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(5))
+        .build()
+        .unwrap_or_default();
+
+    match client.get(&url).send().await {
+        Ok(resp) if resp.status().is_success() => {
+            if let Ok(body) = resp.json::<serde_json::Value>().await {
+                return axum::Json(body).into_response();
+            }
+        }
+        _ => {}
+    }
+
+    (
+        StatusCode::NOT_FOUND,
+        axum::Json(serde_json::json!({
+            "error": format!("Model '{}' not found", model_id)
+        })),
+    )
+        .into_response()
+}
+
+/// Fetch Anthropic's model list (best-effort, 5s timeout).
+async fn fetch_anthropic_models(state: &AppState) -> Result<Vec<serde_json::Value>, ()> {
+    let url = format!("{}/v1/models", state.config.passthrough.url);
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(5))
+        .build()
+        .map_err(|_| ())?;
+
+    let resp = client.get(&url).send().await.map_err(|_| ())?;
+    if !resp.status().is_success() {
+        return Err(());
+    }
+
+    let body: serde_json::Value = resp.json().await.map_err(|_| ())?;
+    body.get("data")
+        .and_then(|d| d.as_array().cloned())
+        .ok_or(())
 }
 
 /// Catch-all fallback handler for any request not matching explicit routes.
