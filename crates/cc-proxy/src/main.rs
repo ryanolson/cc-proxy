@@ -3,6 +3,7 @@
 mod config;
 mod convert;
 mod mode;
+mod models;
 mod openinference;
 mod proxy;
 mod server;
@@ -14,6 +15,7 @@ use std::time::Duration;
 
 use config::ProxyConfig;
 use mode::{ProxyMode, RuntimeMode};
+use models::{ModelDef, ModelRegistry};
 use proxy::compare::CompareDispatcher;
 use server::AppState;
 use stats::ProxyStats;
@@ -45,13 +47,28 @@ fn main() -> anyhow::Result<()> {
     let mut config = ProxyConfig::load(&config_path)?;
 
     // Apply CLI overrides (take precedence over TOML and env vars)
-    if let Some(url) = target_url_override {
-        config.target.url = Some(url);
+    if let Some(ref url) = target_url_override {
+        config.target.url = Some(url.clone());
     }
     if model_override.is_some() {
-        config.model_override = model_override;
+        config.model_override = model_override.clone();
     }
     config.anthropic_only_allowed = allow_anthropic_only;
+
+    // Build model registry from TOML [[models]] + backward-compat synthesis from CLI args.
+    // When no [[models]] are configured but --model and --target-url are both set,
+    // synthesize a single model entry so the old CLI-only workflow keeps working.
+    let mut model_defs = config.models.clone();
+    if model_defs.is_empty() {
+        if let Some(ref model_id) = model_override {
+            model_defs.push(ModelDef {
+                id: model_id.clone(),
+                display_name: None,
+                target_url: None, // will use default_target_url
+            });
+        }
+    }
+    let model_registry = ModelRegistry::new(model_defs, config.target.url.clone());
 
     // Build the tokio runtime first — tonic gRPC exporter needs a reactor context
     let runtime = tokio::runtime::Builder::new_multi_thread()
@@ -67,14 +84,15 @@ fn main() -> anyhow::Result<()> {
             listen_address = %config.server.listen_address,
             passthrough_url = %config.passthrough.url,
             target_url = ?config.target.url,
+            local_models = model_registry.len(),
             "Starting cc-proxy"
         );
 
-        run(config).await
+        run(config, model_registry).await
     })
 }
 
-async fn run(config: ProxyConfig) -> anyhow::Result<()> {
+async fn run(config: ProxyConfig, model_registry: ModelRegistry) -> anyhow::Result<()> {
     // Build Anthropic HTTP client
     let primary_client = reqwest::Client::builder()
         .timeout(Duration::from_secs(config.passthrough.timeout_secs))
@@ -110,6 +128,7 @@ async fn run(config: ProxyConfig) -> anyhow::Result<()> {
         compare_dispatcher,
         stats,
         mode,
+        model_registry,
         tracing_enabled: Arc::new(AtomicBool::new(true)),
     };
 
