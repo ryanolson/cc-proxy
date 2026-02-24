@@ -37,14 +37,14 @@ jobs:
 
       - uses: docker/login-action@v3
         with:
-          registry: nvcr.io
-          username: $oauthtoken
-          password: ${{ secrets.NGC_API_KEY }}
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
       - uses: docker/metadata-action@v5
         id: meta
         with:
-          images: ghcr.io/ryanolson/cc-proxy
+          images: ghcr.io/${{ github.repository }}
           tags: |
             type=raw,value=latest,enable={{is_default_branch}}
             type=sha,prefix=,format=short

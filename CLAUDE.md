@@ -19,14 +19,14 @@ cargo fmt --all                      # Auto-format
 The binary is `cc-proxy`. Always run from the repo root (config defaults to `cc-proxy.toml`):
 ```bash
 ./target/release/cc-proxy --config cc-proxy.toml \
-  --target-url https://<glm-endpoint> --model glm-5-fp8
+  --target-url https://<target-endpoint> --model <model-id>
 ```
 
 Config path can also be set via `CC_PROXY_CONFIG` env var.
 
 ## Architecture
 
-cc-proxy is a **model gateway** that routes Claude Code traffic to self-hosted model deployments  that speak the Anthropic Messages API format natively. No LiteLLM or format conversion is needed — the target receives and returns the same Anthropic-format JSON.
+cc-proxy is a **model gateway** that routes Claude Code traffic to self-hosted model deployments that speak the Anthropic Messages API format natively. No LiteLLM or format conversion is needed — the target receives and returns the same Anthropic-format JSON.
 
 ### Workspace Crates
 
@@ -37,7 +37,7 @@ cc-proxy is a **model gateway** that routes Claude Code traffic to self-hosted m
 
 | Mode | Behavior |
 |------|----------|
-| `target` | Forward all requests to configured target . Return target response. **Default.** |
+| `target` | Forward all requests to configured target. Return target response. **Default.** |
 | `compare` | Forward to passthrough upstream (return response) + fire-and-forget to target for comparison logging. |
 | `anthropic-only` | Forward only to passthrough upstream. Requires `--allow-anthropic-only` at launch — returns 403 on mode switch if flag not set. |
 
@@ -48,7 +48,7 @@ Modes can be toggled at runtime via `PUT /api/mode` without restart. `anthropic-
 | Flag | Description |
 |------|-------------|
 | `--config <path>` | Path to TOML config file (default: `cc-proxy.toml`) |
-| `--target-url <url>` | Target endpoint . Sets `config.target.url`. Never committed to config. |
+| `--target-url <url>` | Target endpoint base URL. Sets `config.target.url`. Never committed to config. |
 | `--model <name>` | Force model for ALL requests, including subagent requests (Haiku, Sonnet). |
 | `--allow-anthropic-only` | Required to enable `anthropic-only` mode at runtime. |
 
@@ -121,9 +121,9 @@ log_level = "info"
 
 # Local model registry — requests matching these IDs route to target
 # [[models]]
-# id = "glm-5-fp8"
-# display_name = "GLM-5 FP8"
-# target_url = "https://glm5-endpoint:8000"
+# id = "my-model"
+# display_name = "My Model"
+# target_url = "https://model-endpoint:8000"
 # context_window = 200000       # reported in /v1/models response
 # max_output_tokens = 65536     # reported in /v1/models response
 ```
@@ -135,7 +135,7 @@ Env vars override with `CC_` prefix and `__` for nesting (e.g., `CC_SERVER__LIST
 ```bash
 # Start proxy (target mode, model override active)
 ./target/release/cc-proxy --config cc-proxy.toml \
-  --target-url https://<glm-endpoint> --model glm-5-fp8
+  --target-url https://<target-endpoint> --model <model-id>
 
 # Verify default mode is target
 curl -s http://localhost:3080/api/mode  # {"mode":"target"}
@@ -159,16 +159,16 @@ This is the required workflow to validate the full proxy pipeline including mode
 ```bash
 cd /path/to/cc-proxy
 ./target/release/cc-proxy --config cc-proxy.toml \
-  --target-url https://<glm-endpoint> --model glm-5-fp8
+  --target-url https://<target-endpoint> --model <model-id>
 ```
 
 **2. Start Claude Code** (tmux session `claude-test`, must cd to cc-proxy first):
 ```bash
 cd /path/to/cc-proxy
-unset CLAUDECODE && ANTHROPIC_BASE_URL=http://localhost:3080 claude --model glm-5-fp8
+unset CLAUDECODE && ANTHROPIC_BASE_URL=http://localhost:3080 claude --model <model-id>
 ```
 - `unset CLAUDECODE` is required to bypass nested session guard when launched from another Claude Code session
-- `--model glm-5-fp8` must be present — without it, subagent calls default to Anthropic models
+- `--model <model-id>` must be present — without it, subagent calls default to Anthropic models
 - `ANTHROPIC_BASE_URL` redirects all Claude Code traffic through the proxy
 
 **3. Validate model override:**
@@ -185,15 +185,15 @@ unset CLAUDECODE && ANTHROPIC_BASE_URL=http://localhost:3080 claude --model glm-
 curl -s http://localhost:3080/api/stats | python3 -m json.tool
 # {"total_requests": N, "input_tokens": N, "output_tokens": N, "tool_calls": N}
 ```
-- `input_tokens` will be non-zero (Some models report these in `message_delta`, proxy handles both locations)
+- `input_tokens` will be non-zero (some models report these in `message_delta`, proxy handles both locations)
 - `output_tokens` and `tool_calls` should reflect the Explore run (many parallel tool calls)
 
 **Known behaviour:**
 - `unset CLAUDECODE` is required when launching from inside an existing Claude Code session — without it the CLI refuses to start
-- `--model glm-5-fp8` on the `claude` command sets the *initial* model; `--model` on the proxy rewrites target-bound requests only
+- `--model <model-id>` on the `claude` command sets the *initial* model; `--model` on the proxy rewrites target-bound requests only
 - In `compare` mode, passthrough traffic goes to Anthropic with the original request body (original model, no injected temperature/top_p/max_tokens)
 - Some models report `input_tokens` in the `message_delta` SSE event, not `message_start` (unlike Anthropic)
-- Target models with small context windows (e.g. small models with limited context) will fail on large Claude Code conversations (commonly 60k-70k+ tokens). The inference frontend may return HTTP 200 and fail mid-stream (SSE) rather than returning a proper 400.
+- Target models with small context windows may fail on large Claude Code conversations (commonly 60k-70k+ tokens). Some inference frontends may return HTTP 200 and fail mid-stream (SSE) rather than returning a proper 400.
 
 ## Tracing with Phoenix
 
@@ -219,7 +219,7 @@ Use `cc-proxy.local.toml` which has `otlp_endpoint = "http://localhost:4317"` co
 
 ```bash
 tmux new-session -d -s cc-proxy
-tmux send-keys -t cc-proxy 'cd /path/to/cc-proxy && ./target/release/cc-proxy --config cc-proxy.local.toml --target-url https://<glm-endpoint> --model glm-5-fp8' Enter
+tmux send-keys -t cc-proxy 'cd /path/to/cc-proxy && ./target/release/cc-proxy --config cc-proxy.local.toml --target-url https://<target-endpoint> --model <model-id>' Enter
 ```
 
 Confirm OTLP connected — proxy logs should show:

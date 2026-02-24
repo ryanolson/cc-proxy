@@ -720,7 +720,7 @@ mod tests {
     }
 
     #[test]
-    fn streaming_response_glm_input_tokens_in_message_delta() {
+    fn streaming_response_input_tokens_in_message_delta() {
         // Some models report input_tokens in message_delta, not message_start
         let body = b"event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_1\",\"role\":\"assistant\",\"usage\":{}}}\n\nevent: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\nevent: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"Hi\"}}\n\nevent: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"input_tokens\":42,\"output_tokens\":5}}\n\n";
         let parsed = parse_streaming_response(body).unwrap();

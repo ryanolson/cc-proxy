@@ -1,6 +1,6 @@
 # cc-proxy
 
-A model gateway that routes Claude Code traffic to self-hosted model deployments  that speak the Anthropic Messages API format natively.
+A model gateway that routes Claude Code traffic to self-hosted model deployments that speak the Anthropic Messages API format natively.
 
 ## Modes
 
@@ -26,10 +26,10 @@ cargo build --release
 ./target/release/cc-proxy \
   --config cc-proxy.toml \
   --target-url https://<your-model-endpoint> \
-  --model glm-5-fp8
+  --model <model-id>
 
 # Launch Claude Code through the proxy
-ANTHROPIC_BASE_URL=http://localhost:3080 claude --model glm-5-fp8
+ANTHROPIC_BASE_URL=http://localhost:3080 claude --model <model-id>
 ```
 
 ## CLI Args
@@ -114,7 +114,7 @@ Use `cc-proxy.local.toml` which has `otlp_endpoint = "http://localhost:4317"` co
 ./target/release/cc-proxy \
   --config cc-proxy.local.toml \
   --target-url https://<your-model-endpoint> \
-  --model glm-5-fp8
+  --model <model-id>
 ```
 
 Confirm OTLP connected — proxy logs should show:

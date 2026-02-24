@@ -1,6 +1,6 @@
 //! Compare dispatcher: fire-and-forget Anthropic-format POST to target URL.
 //!
-//! The target  speaks Anthropic API format natively — no conversion
+//! The target speaks Anthropic API format natively — no conversion
 //! needed. The same rewritten request bytes are forwarded directly to
 //! `target_url/v1/messages`.
 //!
@@ -29,7 +29,7 @@ pub struct CompareDispatcher {
 impl CompareDispatcher {
     /// Create a new dispatcher.
     ///
-    /// - `target_url`: base URL of the target (e.g. `https://glm.example.com`)
+    /// - `target_url`: base URL of the target (e.g. `https://model.example.com`)
     /// - `timeout_secs`: per-request timeout in seconds
     /// - `max_concurrent`: semaphore capacity for in-flight compare requests
     /// - `client`: shared reqwest client
@@ -233,7 +233,7 @@ fn extract_usage(body: &[u8]) -> (Option<u64>, Option<u64>) {
                     if let Some(n) = usage.get("output_tokens").and_then(|v| v.as_u64()) {
                         output_tokens = Some(n);
                     }
-                    // GLM sends input_tokens in message_delta instead of message_start
+                    // Some models send input_tokens in message_delta instead of message_start
                     if input_tokens.is_none() {
                         if let Some(n) = usage.get("input_tokens").and_then(|v| v.as_u64()) {
                             if n > 0 {

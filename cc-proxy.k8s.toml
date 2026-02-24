@@ -1,4 +1,4 @@
-# Route requests through a inference frontend
+# Route requests through an inference frontend
 #
 # Usage:
 #   1. Expose the inference frontend (e.g. via kubectl proxy or port-forward):

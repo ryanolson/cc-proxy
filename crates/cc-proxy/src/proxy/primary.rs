@@ -475,7 +475,7 @@ fn extract_streaming_stats(stats: &ProxyStats, response_bytes: &[u8]) {
     };
 
     // Guard against double-counting input_tokens: Anthropic sends them in
-    // message_start, GLM sends them in message_delta. Some endpoints may send
+    // message_start, some models send them in message_delta. Some endpoints may send
     // both. We take input_tokens from whichever event delivers them first.
     let mut input_tokens_seen = false;
 
@@ -517,7 +517,7 @@ fn extract_streaming_stats(stats: &ProxyStats, response_bytes: &[u8]) {
                     if let Some(output) = usage.get("output_tokens").and_then(|v| v.as_u64()) {
                         stats.add_output_tokens(output);
                     }
-                    // Fallback: some targets (e.g. some targets) send input_tokens: 0 in
+                    // Fallback: some targets send input_tokens: 0 in
                     // message_start and the real count in message_delta. Only
                     // record if we haven't seen a non-zero value already.
                     if !input_tokens_seen {
