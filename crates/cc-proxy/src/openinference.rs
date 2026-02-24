@@ -287,6 +287,16 @@ pub fn set_shadow_response_attributes(span: &Span, response_body: &str) {
     }
 }
 
+/// Set OpenInference span kind and model name on a compare (fire-and-forget) span.
+///
+/// This gives Phoenix enough metadata to classify the span as an LLM call and
+/// display the target model name instead of "unknown".
+pub fn set_compare_attributes(span: &Span, model: &str) {
+    set_str(span, "openinference.span.kind", "LLM");
+    set_str(span, "llm.system", "anthropic");
+    set_str(span, "llm.model_name", model);
+}
+
 /// Set OpenInference response attributes on the span from the full response bytes.
 ///
 /// For non-streaming: parses as a single JSON object.

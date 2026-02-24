@@ -51,7 +51,7 @@ impl CompareDispatcher {
     /// Fire-and-forget: spawns a tokio task to POST the request bytes to the
     /// target and returns immediately. Logs `total_latency_ms` (includes full
     /// body read) alongside the existing `latency_ms` (TTFB).
-    pub fn dispatch(&self, request_bytes: Bytes, correlation_id: String) {
+    pub fn dispatch(&self, request_bytes: Bytes, correlation_id: String, model: String) {
         let client = self.client.clone();
         let semaphore = self.semaphore.clone();
         let url = format!("{}/v1/messages", self.target_url);
@@ -65,6 +65,9 @@ impl CompareDispatcher {
                 total_latency_ms = tracing::field::Empty,
                 status = tracing::field::Empty,
             );
+
+            // Set OpenInference span kind and model so Phoenix classifies this correctly
+            openinference::set_compare_attributes(&span, &model);
 
             async {
                 // Non-blocking acquire — drop if at capacity
