@@ -15,6 +15,7 @@ use tokio::sync::Semaphore;
 use tracing::Instrument;
 
 use super::correlation::CORRELATION_HEADER;
+use crate::openinference;
 
 /// Dispatches compare requests to a target endpoint that speaks Anthropic format.
 #[derive(Clone)]
@@ -108,6 +109,17 @@ impl CompareDispatcher {
 
                                 // Extract token usage — handle both JSON and SSE formats
                                 let (input, output) = extract_usage(&body);
+
+                                // Set OpenInference response attributes so Phoenix
+                                // captures the full GLM-5 response text
+                                let is_streaming = body
+                                    .windows(7)
+                                    .any(|w| w == b"event: ");
+                                openinference::set_response_attributes(
+                                    &tracing::Span::current(),
+                                    &body,
+                                    is_streaming,
+                                );
 
                                 tracing::info!(
                                     status = status,
