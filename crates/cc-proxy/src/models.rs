@@ -21,6 +21,14 @@ pub struct ModelDef {
     /// Target URL for this model. If None, uses the global `--target-url`.
     #[serde(default)]
     pub target_url: Option<String>,
+
+    /// Maximum context window size in tokens (reported in /v1/models).
+    #[serde(default)]
+    pub context_window: Option<u64>,
+
+    /// Maximum output tokens the model can generate (reported in /v1/models).
+    #[serde(default)]
+    pub max_output_tokens: Option<u64>,
 }
 
 /// Routing decision for a single request.
@@ -119,6 +127,8 @@ mod tests {
                 id: "glm-5-fp8".into(),
                 display_name: Some("GLM-5 FP8".into()),
                 target_url: Some("http://glm:8000".into()),
+                context_window: None,
+                max_output_tokens: None,
             }],
             None,
         );
@@ -138,6 +148,8 @@ mod tests {
                 id: "glm-5-fp8".into(),
                 display_name: None,
                 target_url: None,
+                context_window: None,
+                max_output_tokens: None,
             }],
             Some("http://default:8000".into()),
         );
@@ -157,6 +169,8 @@ mod tests {
                 id: "glm-5-fp8".into(),
                 display_name: None,
                 target_url: Some("http://glm:8000".into()),
+                context_window: None,
+                max_output_tokens: None,
             }],
             None,
         );
@@ -174,6 +188,8 @@ mod tests {
                 id: "glm-5-fp8".into(),
                 display_name: None,
                 target_url: None,
+                context_window: None,
+                max_output_tokens: None,
             }],
             None, // no default either
         );
@@ -188,8 +204,8 @@ mod tests {
     fn list_models_returns_all() {
         let reg = ModelRegistry::new(
             vec![
-                ModelDef { id: "a".into(), display_name: None, target_url: None },
-                ModelDef { id: "b".into(), display_name: None, target_url: None },
+                ModelDef { id: "a".into(), display_name: None, target_url: None, context_window: None, max_output_tokens: None },
+                ModelDef { id: "b".into(), display_name: None, target_url: None, context_window: None, max_output_tokens: None },
             ],
             None,
         );

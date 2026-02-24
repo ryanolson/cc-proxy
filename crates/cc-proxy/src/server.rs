@@ -280,12 +280,19 @@ async fn handle_list_models(State(state): State<Arc<AppState>>) -> Response {
     let mut data: Vec<serde_json::Value> = local_models
         .iter()
         .map(|m| {
-            serde_json::json!({
+            let mut obj = serde_json::json!({
                 "id": m.id,
                 "display_name": m.display_name.as_deref().unwrap_or(&m.id),
                 "type": "model",
                 "created_at": now,
-            })
+            });
+            if let Some(cw) = m.context_window {
+                obj["context_window"] = serde_json::json!(cw);
+            }
+            if let Some(mot) = m.max_output_tokens {
+                obj["max_output_tokens"] = serde_json::json!(mot);
+            }
+            obj
         })
         .collect();
 
@@ -318,13 +325,19 @@ async fn handle_get_model(
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
             .as_secs();
-        return axum::Json(serde_json::json!({
+        let mut obj = serde_json::json!({
             "id": m.id,
             "display_name": m.display_name.as_deref().unwrap_or(&m.id),
             "type": "model",
             "created_at": now,
-        }))
-        .into_response();
+        });
+        if let Some(cw) = m.context_window {
+            obj["context_window"] = serde_json::json!(cw);
+        }
+        if let Some(mot) = m.max_output_tokens {
+            obj["max_output_tokens"] = serde_json::json!(mot);
+        }
+        return axum::Json(obj).into_response();
     }
 
     // Try Anthropic

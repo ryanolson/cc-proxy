@@ -118,6 +118,14 @@ passthrough_auth = true
 service_name = "cc-proxy"
 # otlp_endpoint = "http://localhost:4317"  # optional — omit to disable OTLP entirely
 log_level = "info"
+
+# Local model registry — requests matching these IDs route to target
+# [[models]]
+# id = "glm-5-fp8"
+# display_name = "GLM-5 FP8"
+# target_url = "https://glm5-endpoint:8000"
+# context_window = 200000       # reported in /v1/models response
+# max_output_tokens = 65536     # reported in /v1/models response
 ```
 
 Env vars override with `CC_` prefix and `__` for nesting (e.g., `CC_SERVER__LISTEN_ADDRESS`).

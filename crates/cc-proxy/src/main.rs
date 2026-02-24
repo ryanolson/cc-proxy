@@ -65,6 +65,8 @@ fn main() -> anyhow::Result<()> {
                 id: model_id.clone(),
                 display_name: None,
                 target_url: None, // will use default_target_url
+                context_window: None,
+                max_output_tokens: None,
             });
         }
     }
