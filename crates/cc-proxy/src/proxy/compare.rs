@@ -48,7 +48,8 @@ impl CompareDispatcher {
     }
 
     /// Fire-and-forget: spawns a tokio task to POST the request bytes to the
-    /// target and returns immediately.
+    /// target and returns immediately. Logs `total_latency_ms` (includes full
+    /// body read) alongside the existing `latency_ms` (TTFB).
     pub fn dispatch(&self, request_bytes: Bytes, correlation_id: String) {
         let client = self.client.clone();
         let semaphore = self.semaphore.clone();
@@ -60,6 +61,7 @@ impl CompareDispatcher {
                 "compare_request",
                 correlation_id = %correlation_id,
                 latency_ms = tracing::field::Empty,
+                total_latency_ms = tracing::field::Empty,
                 status = tracing::field::Empty,
             );
 
@@ -99,29 +101,20 @@ impl CompareDispatcher {
 
                         match resp.bytes().await {
                             Ok(body) => {
-                                // Try to extract token usage from Anthropic-format response
-                                if let Ok(parsed) =
-                                    serde_json::from_slice::<serde_json::Value>(&body)
-                                {
-                                    if let Some(usage) = parsed.get("usage") {
-                                        let input =
-                                            usage.get("input_tokens").and_then(|v| v.as_u64());
-                                        let output =
-                                            usage.get("output_tokens").and_then(|v| v.as_u64());
-                                        tracing::info!(
-                                            status = status,
-                                            latency_ms = latency,
-                                            input_tokens = ?input,
-                                            output_tokens = ?output,
-                                            "Compare request complete"
-                                        );
-                                        return;
-                                    }
-                                }
+                                // Record total latency including full body read
+                                let total_latency = start.elapsed().as_millis() as u64;
+                                tracing::Span::current()
+                                    .record("total_latency_ms", total_latency);
+
+                                // Extract token usage — handle both JSON and SSE formats
+                                let (input, output) = extract_usage(&body);
 
                                 tracing::info!(
                                     status = status,
                                     latency_ms = latency,
+                                    total_latency_ms = total_latency,
+                                    input_tokens = ?input,
+                                    output_tokens = ?output,
                                     "Compare request complete"
                                 );
                             }
@@ -153,4 +146,83 @@ impl CompareDispatcher {
             .await;
         });
     }
+}
+
+/// Extract input/output token counts from a response body.
+///
+/// Handles both formats:
+/// - Non-streaming JSON: `{"usage": {"input_tokens": N, "output_tokens": N}}`
+/// - SSE stream: parses `message_start` and `message_delta` events
+fn extract_usage(body: &[u8]) -> (Option<u64>, Option<u64>) {
+    // Try non-streaming JSON first
+    if let Ok(parsed) = serde_json::from_slice::<serde_json::Value>(body) {
+        if let Some(usage) = parsed.get("usage") {
+            return (
+                usage.get("input_tokens").and_then(|v| v.as_u64()),
+                usage.get("output_tokens").and_then(|v| v.as_u64()),
+            );
+        }
+    }
+
+    // Fall back to SSE parsing
+    let body_str = match std::str::from_utf8(body) {
+        Ok(s) => s,
+        Err(_) => return (None, None),
+    };
+
+    let mut input_tokens: Option<u64> = None;
+    let mut output_tokens: Option<u64> = None;
+
+    for chunk in body_str.split("\n\n") {
+        let mut event_type = None;
+        let mut data_str = None;
+
+        for line in chunk.lines() {
+            if let Some(et) = line.strip_prefix("event: ") {
+                event_type = Some(et.trim());
+            } else if let Some(d) = line.strip_prefix("data: ") {
+                data_str = Some(d.trim());
+            }
+        }
+
+        let data_str = match data_str {
+            Some(d) => d,
+            None => continue,
+        };
+
+        let data: serde_json::Value = match serde_json::from_str(data_str) {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+
+        match event_type {
+            Some("message_start") => {
+                if let Some(usage) = data.get("message").and_then(|m| m.get("usage")) {
+                    if let Some(n) = usage.get("input_tokens").and_then(|v| v.as_u64()) {
+                        if n > 0 {
+                            input_tokens = Some(n);
+                        }
+                    }
+                }
+            }
+            Some("message_delta") => {
+                if let Some(usage) = data.get("usage") {
+                    if let Some(n) = usage.get("output_tokens").and_then(|v| v.as_u64()) {
+                        output_tokens = Some(n);
+                    }
+                    // GLM sends input_tokens in message_delta instead of message_start
+                    if input_tokens.is_none() {
+                        if let Some(n) = usage.get("input_tokens").and_then(|v| v.as_u64()) {
+                            if n > 0 {
+                                input_tokens = Some(n);
+                            }
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    (input_tokens, output_tokens)
 }
