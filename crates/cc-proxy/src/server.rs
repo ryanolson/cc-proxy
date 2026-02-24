@@ -191,15 +191,9 @@ async fn handle_messages(
                             body.clone()
                         }
                     };
-                    let compare_model = state
-                        .config
-                        .model_override
-                        .as_deref()
-                        .unwrap_or(&model)
-                        .to_string();
                     state
                         .compare_dispatcher
-                        .dispatch(target_body, correlation_id.clone(), compare_model);
+                        .dispatch(target_body, correlation_id.clone());
                 }
 
                 // Forward original unmodified body to Anthropic

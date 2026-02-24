@@ -51,7 +51,7 @@ impl CompareDispatcher {
     /// Fire-and-forget: spawns a tokio task to POST the request bytes to the
     /// target and returns immediately. Logs `total_latency_ms` (includes full
     /// body read) alongside the existing `latency_ms` (TTFB).
-    pub fn dispatch(&self, request_bytes: Bytes, correlation_id: String, model: String) {
+    pub fn dispatch(&self, request_bytes: Bytes, correlation_id: String) {
         let client = self.client.clone();
         let semaphore = self.semaphore.clone();
         let url = format!("{}/v1/messages", self.target_url);
@@ -66,10 +66,18 @@ impl CompareDispatcher {
                 status = tracing::field::Empty,
             );
 
-            // Set OpenInference span kind and model so Phoenix classifies this correctly
-            openinference::set_compare_attributes(&span, &model);
-
             async {
+                // Set OpenInference request attributes (kind, model, input
+                // messages, tools, invocation params) from the request JSON.
+                // This runs inside .instrument(span) so Span::current() is the
+                // properly-entered compare_request span.
+                if let Ok(parsed) = serde_json::from_slice::<serde_json::Value>(&request_bytes) {
+                    openinference::set_request_attributes(
+                        &tracing::Span::current(),
+                        &parsed,
+                    );
+                }
+
                 // Non-blocking acquire — drop if at capacity
                 let _permit = match semaphore.try_acquire_owned() {
                     Ok(permit) => permit,
@@ -113,8 +121,8 @@ impl CompareDispatcher {
                                 // Extract token usage — handle both JSON and SSE formats
                                 let (input, output) = extract_usage(&body);
 
-                                // Set OpenInference response attributes so Phoenix
-                                // captures the full GLM-5 response text
+                                // Set OpenInference response attributes (output
+                                // messages, tool calls, token counts)
                                 let is_streaming = body
                                     .windows(7)
                                     .any(|w| w == b"event: ");
