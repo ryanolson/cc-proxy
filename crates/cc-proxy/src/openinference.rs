@@ -334,25 +334,33 @@ pub fn set_response_attributes(span: &Span, response_bytes: &[u8], is_streaming:
     }
 }
 
-fn set_nonstreaming_response_attributes(span: &Span, response_bytes: &[u8]) {
-    let body: serde_json::Value = match serde_json::from_slice(response_bytes) {
-        Ok(v) => v,
-        Err(e) => {
-            tracing::warn!(error = %e, "Failed to parse non-streaming response for OpenInference attributes");
-            return;
-        }
-    };
+/// Parsed response data extracted from either JSON or SSE response bodies.
+/// Separated from span-setting so it can be tested independently.
+#[derive(Debug, Default, PartialEq)]
+struct ParsedResponse {
+    role: Option<String>,
+    text_content: String,
+    tool_calls: Vec<ParsedToolCall>,
+    input_tokens: Option<i64>,
+    output_tokens: Option<i64>,
+}
 
-    // Role
-    if let Some(role) = body.get("role").and_then(|v| v.as_str()) {
-        set_str(span, "llm.output_messages.0.message.role", role);
-    }
+#[derive(Debug, PartialEq)]
+struct ParsedToolCall {
+    name: String,
+    arguments: String,
+}
 
-    // Content blocks — extract text and tool_use separately
+/// Parse a non-streaming Anthropic JSON response body.
+fn parse_nonstreaming_response(response_bytes: &[u8]) -> Option<ParsedResponse> {
+    let body: serde_json::Value = serde_json::from_slice(response_bytes).ok()?;
+
+    let role = body.get("role").and_then(|v| v.as_str()).map(String::from);
+
+    let mut text_parts = Vec::new();
+    let mut tool_calls = Vec::new();
+
     if let Some(content_arr) = body.get("content").and_then(|v| v.as_array()) {
-        let mut text_parts = Vec::new();
-        let mut tool_idx: usize = 0;
-
         for block in content_arr {
             match block.get("type").and_then(|v| v.as_str()) {
                 Some("text") => {
@@ -361,52 +369,44 @@ fn set_nonstreaming_response_attributes(span: &Span, response_bytes: &[u8]) {
                     }
                 }
                 Some("tool_use") => {
-                    let tc_prefix = format!(
-                        "llm.output_messages.0.message.tool_calls.{tool_idx}.tool_call.function"
-                    );
-                    if let Some(name) = block.get("name").and_then(|v| v.as_str()) {
-                        set_str(span, format!("{tc_prefix}.name"), name);
-                    }
-                    if let Some(input) = block.get("input") {
-                        if let Ok(args) = serde_json::to_string(input) {
-                            set_str(span, format!("{tc_prefix}.arguments"), args);
-                        }
-                    }
-                    tool_idx += 1;
+                    let name = block
+                        .get("name")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string();
+                    let arguments = block
+                        .get("input")
+                        .and_then(|v| serde_json::to_string(v).ok())
+                        .unwrap_or_default();
+                    tool_calls.push(ParsedToolCall { name, arguments });
                 }
                 _ => {}
             }
         }
-
-        if !text_parts.is_empty() {
-            let joined = text_parts.join("");
-            set_str(span, "llm.output_messages.0.message.content", &joined);
-            // output.value = clean text content, not raw JSON body
-            set_str(span, "output.value", joined);
-        }
     }
 
-    // Token counts
-    if let Some(usage) = body.get("usage") {
-        if let Some(input) = usage.get("input_tokens").and_then(|v| v.as_i64()) {
-            set_i64(span, "llm.token_count.prompt", input);
-        }
-        if let Some(output) = usage.get("output_tokens").and_then(|v| v.as_i64()) {
-            set_i64(span, "llm.token_count.completion", output);
-        }
-    }
-}
-
-fn set_streaming_response_attributes(span: &Span, response_bytes: &[u8]) {
-    let body_str = match std::str::from_utf8(response_bytes) {
-        Ok(s) => s,
-        Err(e) => {
-            tracing::warn!(error = %e, "Non-UTF8 streaming response, skipping OpenInference attributes");
-            return;
-        }
+    let (input_tokens, output_tokens) = if let Some(usage) = body.get("usage") {
+        (
+            usage.get("input_tokens").and_then(|v| v.as_i64()),
+            usage.get("output_tokens").and_then(|v| v.as_i64()),
+        )
+    } else {
+        (None, None)
     };
 
-    // Track accumulated state across SSE events
+    Some(ParsedResponse {
+        role,
+        text_content: text_parts.join(""),
+        tool_calls,
+        input_tokens,
+        output_tokens,
+    })
+}
+
+/// Parse a streaming SSE Anthropic response body.
+fn parse_streaming_response(response_bytes: &[u8]) -> Option<ParsedResponse> {
+    let body_str = std::str::from_utf8(response_bytes).ok()?;
+
     let mut input_tokens: Option<i64> = None;
     let mut output_tokens: Option<i64> = None;
     let mut role: Option<String> = None;
@@ -414,13 +414,12 @@ fn set_streaming_response_attributes(span: &Span, response_bytes: &[u8]) {
     struct ContentBlock {
         block_type: String,
         text: String,
-        tool_name: Option<String>,
+        tool_name: String,
         tool_args_json: String,
     }
 
     let mut blocks: Vec<ContentBlock> = Vec::new();
 
-    // Parse SSE events: split on double newlines
     for event_chunk in body_str.split("\n\n") {
         let mut event_type = None;
         let mut data_str = None;
@@ -463,13 +462,11 @@ fn set_streaming_response_attributes(span: &Span, response_bytes: &[u8]) {
                         .and_then(|v| v.as_str())
                         .unwrap_or("text")
                         .to_string();
-                    let tool_name = if bt == "tool_use" {
-                        cb.get("name")
-                            .and_then(|v| v.as_str())
-                            .map(|s| s.to_string())
-                    } else {
-                        None
-                    };
+                    let tool_name = cb
+                        .get("name")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string();
                     blocks.push(ContentBlock {
                         block_type: bt,
                         text: String::new(),
@@ -507,8 +504,6 @@ fn set_streaming_response_attributes(span: &Span, response_bytes: &[u8]) {
                     if let Some(ot) = usage.get("output_tokens").and_then(|v| v.as_i64()) {
                         output_tokens = Some(ot);
                     }
-                    // Fallback: Some models report input_tokens here instead of message_start.
-                    // Only set if message_start didn't already provide them.
                     if input_tokens.is_none() {
                         if let Some(it) = usage.get("input_tokens").and_then(|v| v.as_i64()) {
                             input_tokens = Some(it);
@@ -520,16 +515,8 @@ fn set_streaming_response_attributes(span: &Span, response_bytes: &[u8]) {
         }
     }
 
-    // Set span attributes from accumulated state.
-    // Use the reassembled text content (not the raw SSE body) for output.value
-    // so Phoenix displays clean text instead of SSE event chunks.
-
-    if let Some(r) = role {
-        set_str(span, "llm.output_messages.0.message.role", r);
-    }
-
     let mut text_parts = Vec::new();
-    let mut tool_call_idx: usize = 0;
+    let mut tool_calls = Vec::new();
 
     for block in &blocks {
         match block.block_type.as_str() {
@@ -539,36 +526,68 @@ fn set_streaming_response_attributes(span: &Span, response_bytes: &[u8]) {
                 }
             }
             "tool_use" => {
-                let tc_prefix = format!(
-                    "llm.output_messages.0.message.tool_calls.{tool_call_idx}.tool_call.function"
-                );
-                if let Some(ref name) = block.tool_name {
-                    set_str(span, format!("{tc_prefix}.name"), name.clone());
-                }
-                if !block.tool_args_json.is_empty() {
-                    set_str(
-                        span,
-                        format!("{tc_prefix}.arguments"),
-                        block.tool_args_json.clone(),
-                    );
-                }
-                tool_call_idx += 1;
+                tool_calls.push(ParsedToolCall {
+                    name: block.tool_name.clone(),
+                    arguments: block.tool_args_json.clone(),
+                });
             }
             _ => {}
         }
     }
 
-    if !text_parts.is_empty() {
-        let joined = text_parts.join("");
-        set_str(span, "llm.output_messages.0.message.content", &joined);
-        set_str(span, "output.value", joined);
-    }
+    Some(ParsedResponse {
+        role,
+        text_content: text_parts.join(""),
+        tool_calls,
+        input_tokens,
+        output_tokens,
+    })
+}
 
-    if let Some(it) = input_tokens {
+/// Apply a ParsedResponse to a span as OpenInference attributes.
+fn apply_response_to_span(span: &Span, parsed: &ParsedResponse) {
+    if !parsed.text_content.is_empty() {
+        set_str(span, "output.value", &parsed.text_content);
+        set_str(
+            span,
+            "llm.output_messages.0.message.content",
+            &parsed.text_content,
+        );
+    }
+    if let Some(ref r) = parsed.role {
+        set_str(span, "llm.output_messages.0.message.role", r.clone());
+    }
+    for (idx, tc) in parsed.tool_calls.iter().enumerate() {
+        let prefix =
+            format!("llm.output_messages.0.message.tool_calls.{idx}.tool_call.function");
+        set_str(span, format!("{prefix}.name"), &tc.name);
+        if !tc.arguments.is_empty() {
+            set_str(span, format!("{prefix}.arguments"), &tc.arguments);
+        }
+    }
+    if let Some(it) = parsed.input_tokens {
         set_i64(span, "llm.token_count.prompt", it);
     }
-    if let Some(ot) = output_tokens {
+    if let Some(ot) = parsed.output_tokens {
         set_i64(span, "llm.token_count.completion", ot);
+    }
+}
+
+fn set_nonstreaming_response_attributes(span: &Span, response_bytes: &[u8]) {
+    match parse_nonstreaming_response(response_bytes) {
+        Some(parsed) => apply_response_to_span(span, &parsed),
+        None => {
+            tracing::warn!("Failed to parse non-streaming response for OpenInference attributes");
+        }
+    }
+}
+
+fn set_streaming_response_attributes(span: &Span, response_bytes: &[u8]) {
+    match parse_streaming_response(response_bytes) {
+        Some(parsed) => apply_response_to_span(span, &parsed),
+        None => {
+            tracing::warn!("Non-UTF8 streaming response, skipping OpenInference attributes");
+        }
     }
 }
 
@@ -576,8 +595,159 @@ fn set_streaming_response_attributes(span: &Span, response_bytes: &[u8]) {
 mod tests {
     use super::*;
 
+    // ── extract_message_text ──────────────────────────────────────────
+
     #[test]
-    fn test_set_request_attributes_no_panic() {
+    fn extract_text_from_string_content() {
+        let msg: serde_json::Value =
+            serde_json::from_str(r#"{"role": "user", "content": "Hello world"}"#).unwrap();
+        assert_eq!(extract_message_text(&msg), "Hello world");
+    }
+
+    #[test]
+    fn extract_text_from_blocks_skips_tool_result() {
+        let msg: serde_json::Value = serde_json::from_str(r#"{
+            "role": "user",
+            "content": [
+                {"type": "tool_result", "tool_use_id": "t1", "content": "<is_displaying_contents>true</is_displaying_contents>"},
+                {"type": "text", "text": "What did you find?"}
+            ]
+        }"#).unwrap();
+        assert_eq!(extract_message_text(&msg), "What did you find?");
+    }
+
+    #[test]
+    fn extract_text_from_blocks_skips_thinking() {
+        let msg: serde_json::Value = serde_json::from_str(r#"{
+            "role": "assistant",
+            "content": [
+                {"type": "thinking", "thinking": "Let me consider..."},
+                {"type": "text", "text": "Here's my answer."}
+            ]
+        }"#).unwrap();
+        assert_eq!(extract_message_text(&msg), "Here's my answer.");
+    }
+
+    #[test]
+    fn extract_text_empty_when_no_text_blocks() {
+        let msg: serde_json::Value = serde_json::from_str(r#"{
+            "role": "user",
+            "content": [
+                {"type": "tool_result", "tool_use_id": "t1", "content": "some result"}
+            ]
+        }"#).unwrap();
+        assert_eq!(extract_message_text(&msg), "");
+    }
+
+    #[test]
+    fn extract_text_joins_multiple_text_blocks() {
+        let msg: serde_json::Value = serde_json::from_str(r#"{
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "First part"},
+                {"type": "text", "text": "Second part"}
+            ]
+        }"#).unwrap();
+        assert_eq!(extract_message_text(&msg), "First part\nSecond part");
+    }
+
+    // ── parse_nonstreaming_response ───────────────────────────────────
+
+    #[test]
+    fn nonstreaming_response_extracts_text_and_tokens() {
+        let body = br#"{
+            "role": "assistant",
+            "content": [
+                {"type": "text", "text": "Hello!"},
+                {"type": "tool_use", "id": "t1", "name": "bash", "input": {"cmd": "ls"}}
+            ],
+            "usage": {"input_tokens": 100, "output_tokens": 50}
+        }"#;
+        let parsed = parse_nonstreaming_response(body).unwrap();
+        assert_eq!(parsed.role.as_deref(), Some("assistant"));
+        assert_eq!(parsed.text_content, "Hello!");
+        assert_eq!(parsed.tool_calls.len(), 1);
+        assert_eq!(parsed.tool_calls[0].name, "bash");
+        assert_eq!(parsed.input_tokens, Some(100));
+        assert_eq!(parsed.output_tokens, Some(50));
+    }
+
+    #[test]
+    fn nonstreaming_response_text_is_clean_not_raw_json() {
+        let body = br#"{
+            "role": "assistant",
+            "content": [{"type": "text", "text": "Clean text here"}],
+            "usage": {"input_tokens": 10, "output_tokens": 5}
+        }"#;
+        let parsed = parse_nonstreaming_response(body).unwrap();
+        // Must be clean text, NOT the raw JSON body
+        assert_eq!(parsed.text_content, "Clean text here");
+        assert!(!parsed.text_content.contains(r#""type""#));
+        assert!(!parsed.text_content.contains(r#""role""#));
+    }
+
+    #[test]
+    fn nonstreaming_response_invalid_json_returns_none() {
+        assert!(parse_nonstreaming_response(b"not json").is_none());
+    }
+
+    // ── parse_streaming_response ──────────────────────────────────────
+
+    #[test]
+    fn streaming_response_reassembles_text() {
+        let body = b"event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_1\",\"role\":\"assistant\",\"usage\":{\"input_tokens\":25}}}\n\nevent: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\nevent: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"Hello\"}}\n\nevent: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\" world\"}}\n\nevent: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":10}}\n\n";
+        let parsed = parse_streaming_response(body).unwrap();
+
+        assert_eq!(parsed.role.as_deref(), Some("assistant"));
+        // Must be reassembled text, NOT raw SSE body
+        assert_eq!(parsed.text_content, "Hello world");
+        assert!(!parsed.text_content.contains("event:"));
+        assert!(!parsed.text_content.contains("data:"));
+        assert_eq!(parsed.input_tokens, Some(25));
+        assert_eq!(parsed.output_tokens, Some(10));
+    }
+
+    #[test]
+    fn streaming_response_extracts_tool_use() {
+        let body = b"event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_1\",\"role\":\"assistant\",\"usage\":{\"input_tokens\":50}}}\n\nevent: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"tool_use\",\"id\":\"t1\",\"name\":\"bash\"}}\n\nevent: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"{\\\"cmd\\\": \"}}\n\nevent: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"\\\"ls\\\"}\"}}\n\nevent: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"tool_use\"},\"usage\":{\"output_tokens\":20}}\n\n";
+        let parsed = parse_streaming_response(body).unwrap();
+
+        assert_eq!(parsed.tool_calls.len(), 1);
+        assert_eq!(parsed.tool_calls[0].name, "bash");
+        assert_eq!(parsed.tool_calls[0].arguments, r#"{"cmd": "ls"}"#);
+        assert_eq!(parsed.input_tokens, Some(50));
+        assert_eq!(parsed.output_tokens, Some(20));
+    }
+
+    #[test]
+    fn streaming_response_glm_input_tokens_in_message_delta() {
+        // Some models report input_tokens in message_delta, not message_start
+        let body = b"event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_1\",\"role\":\"assistant\",\"usage\":{}}}\n\nevent: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\nevent: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"Hi\"}}\n\nevent: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"input_tokens\":42,\"output_tokens\":5}}\n\n";
+        let parsed = parse_streaming_response(body).unwrap();
+
+        assert_eq!(parsed.text_content, "Hi");
+        assert_eq!(parsed.input_tokens, Some(42));
+        assert_eq!(parsed.output_tokens, Some(5));
+    }
+
+    #[test]
+    fn streaming_response_invalid_utf8_returns_none() {
+        assert!(parse_streaming_response(&[0xff, 0xfe]).is_none());
+    }
+
+    #[test]
+    fn streaming_response_bad_json_events_skipped() {
+        let body = b"event: message_start\ndata: {bad json}\n\nevent: content_block_delta\ndata: also bad\n\n";
+        let parsed = parse_streaming_response(body).unwrap();
+        // Should parse successfully but find nothing useful
+        assert_eq!(parsed.text_content, "");
+        assert!(parsed.input_tokens.is_none());
+    }
+
+    // ── set_request_attributes (smoke tests — span setting still needs OTel) ──
+
+    #[test]
+    fn set_request_attributes_no_panic() {
         let json = r#"{
             "model": "claude-sonnet-4-20250514",
             "max_tokens": 8096,
@@ -591,7 +761,6 @@ mod tests {
             ],
             "tools": [{"name": "bash", "description": "Run bash", "input_schema": {"type": "object"}}],
             "temperature": 0.7,
-            "top_p": 0.9,
             "stream": true
         }"#;
         let req: serde_json::Value = serde_json::from_str(json).unwrap();
@@ -600,8 +769,7 @@ mod tests {
     }
 
     #[test]
-    fn test_request_with_unknown_content_blocks() {
-        // Simulate a real Claude Code request with thinking blocks, citations, etc.
+    fn set_request_attributes_unknown_blocks_no_panic() {
         let json = r#"{
             "model": "claude-opus-4-6",
             "max_tokens": 16384,
@@ -622,135 +790,43 @@ mod tests {
         }"#;
         let req: serde_json::Value = serde_json::from_str(json).unwrap();
         let span = tracing::info_span!("test");
-        // Should not panic — unknown block types are skipped
         set_request_attributes(&span, &req);
     }
 
     #[test]
-    fn test_system_prompt_as_blocks() {
-        let json = r#"{
-            "model": "test",
-            "max_tokens": 100,
-            "system": [
-                {"type": "text", "text": "Block one"},
-                {"type": "text", "text": "Block two"}
-            ],
-            "messages": [{"role": "user", "content": "Hi"}]
-        }"#;
-        let req: serde_json::Value = serde_json::from_str(json).unwrap();
-        let span = tracing::info_span!("test");
-        set_request_attributes(&span, &req);
-    }
-
-    #[test]
-    fn test_set_nonstreaming_response_no_panic() {
-        let body = br#"{
-            "id": "msg_123",
-            "type": "message",
-            "role": "assistant",
-            "content": [
-                {"type": "text", "text": "Hello!"},
-                {"type": "tool_use", "id": "t1", "name": "bash", "input": {"cmd": "ls"}}
-            ],
-            "usage": {"input_tokens": 100, "output_tokens": 50}
-        }"#;
+    fn set_response_attributes_no_panic() {
+        let body = br#"{"role": "assistant", "content": [{"type": "text", "text": "Hi"}], "usage": {"input_tokens": 10, "output_tokens": 5}}"#;
         let span = tracing::info_span!("test");
         set_response_attributes(&span, body, false);
     }
 
     #[test]
-    fn test_set_streaming_response_no_panic() {
-        let body = b"event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_1\",\"role\":\"assistant\",\"usage\":{\"input_tokens\":25}}}\n\nevent: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\nevent: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"Hello\"}}\n\nevent: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\" world\"}}\n\nevent: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":10}}\n\n";
+    fn set_response_attributes_invalid_no_panic() {
         let span = tracing::info_span!("test");
-        set_response_attributes(&span, body, true);
+        set_response_attributes(&span, b"not json", false);
+        set_response_attributes(&span, &[0xff, 0xfe], true);
     }
 
-    #[test]
-    fn test_streaming_tool_use_no_panic() {
-        let body = b"event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_1\",\"role\":\"assistant\",\"usage\":{\"input_tokens\":50}}}\n\nevent: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"tool_use\",\"id\":\"t1\",\"name\":\"bash\"}}\n\nevent: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"{\\\"cmd\\\": \"}}\n\nevent: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"\\\"ls\\\"}\"}}\n\nevent: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"tool_use\"},\"usage\":{\"output_tokens\":20}}\n\n";
-        let span = tracing::info_span!("test");
-        set_response_attributes(&span, body, true);
-    }
+    // ── shadow request/response (smoke tests) ─────────────────────────
 
     #[test]
-    fn test_invalid_json_response_no_panic() {
-        let body = b"not json at all";
-        let span = tracing::info_span!("test");
-        set_response_attributes(&span, body, false);
-    }
-
-    #[test]
-    fn test_invalid_sse_events_no_panic() {
-        let body = b"event: message_start\ndata: {bad json}\n\nevent: content_block_delta\ndata: also bad\n\n";
-        let span = tracing::info_span!("test");
-        set_response_attributes(&span, body, true);
-    }
-
-    #[test]
-    fn test_shadow_request_attributes_no_panic() {
-        let json = r#"{
-            "model": "deepseek-v3.2",
-            "messages": [
-                {"role": "system", "content": "You are helpful."},
-                {"role": "user", "content": "Hello"},
-                {"role": "assistant", "content": "Hi!", "tool_calls": [
-                    {"id": "t1", "type": "function", "function": {"name": "bash", "arguments": "{\"cmd\":\"ls\"}"}}
-                ]},
-                {"role": "tool", "content": "file1.rs", "tool_call_id": "t1"},
-                {"role": "user", "content": "What did you find?"}
-            ],
-            "max_completion_tokens": 32000,
-            "stream": false,
-            "tools": [{"type": "function", "function": {"name": "bash", "description": "Run bash", "parameters": {}}}]
-        }"#;
+    fn shadow_request_no_panic() {
+        let json = r#"{"model": "deepseek-v3.2", "messages": [{"role": "user", "content": "Hello"}]}"#;
         let req: serde_json::Value = serde_json::from_str(json).unwrap();
-        let span = tracing::info_span!("test_shadow_req");
+        let span = tracing::info_span!("test");
         set_shadow_request_attributes(&span, &req);
     }
 
     #[test]
-    fn test_shadow_response_attributes_no_panic() {
-        let body = r#"{
-            "id": "chatcmpl-123",
-            "object": "chat.completion",
-            "choices": [{
-                "index": 0,
-                "message": {
-                    "role": "assistant",
-                    "content": "Hello!"
-                },
-                "finish_reason": "stop"
-            }],
-            "usage": {"prompt_tokens": 100, "completion_tokens": 10, "total_tokens": 110}
-        }"#;
-        let span = tracing::info_span!("test_shadow_resp");
+    fn shadow_response_no_panic() {
+        let body = r#"{"choices": [{"message": {"role": "assistant", "content": "Hi"}}], "usage": {"prompt_tokens": 10, "completion_tokens": 5}}"#;
+        let span = tracing::info_span!("test");
         set_shadow_response_attributes(&span, body);
     }
 
     #[test]
-    fn test_shadow_response_with_tool_calls_no_panic() {
-        let body = r#"{
-            "id": "chatcmpl-456",
-            "choices": [{
-                "message": {
-                    "role": "assistant",
-                    "tool_calls": [{
-                        "id": "call_1",
-                        "type": "function",
-                        "function": {"name": "bash", "arguments": "{\"cmd\":\"ls\"}"}
-                    }]
-                },
-                "finish_reason": "tool_calls"
-            }],
-            "usage": {"prompt_tokens": 50, "completion_tokens": 20, "total_tokens": 70}
-        }"#;
-        let span = tracing::info_span!("test_shadow_resp_tc");
-        set_shadow_response_attributes(&span, body);
-    }
-
-    #[test]
-    fn test_shadow_response_invalid_json_no_panic() {
-        let span = tracing::info_span!("test_shadow_resp_bad");
+    fn shadow_response_invalid_no_panic() {
+        let span = tracing::info_span!("test");
         set_shadow_response_attributes(&span, "not json");
     }
 }
