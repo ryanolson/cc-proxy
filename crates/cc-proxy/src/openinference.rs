@@ -21,6 +21,33 @@ fn set_i64(span: &Span, key: impl Into<Key>, value: i64) {
     span.set_attribute(key, Value::I64(value));
 }
 
+/// Extract clean text content from an Anthropic message object.
+///
+/// Handles both string content and array-of-blocks content. For blocks,
+/// extracts only `text` type blocks — tool_result, tool_use, thinking etc.
+/// are skipped to keep the display clean.
+fn extract_message_text(msg: &serde_json::Value) -> String {
+    if let Some(content) = msg.get("content") {
+        if let Some(s) = content.as_str() {
+            return s.to_string();
+        }
+        if let Some(blocks) = content.as_array() {
+            let parts: Vec<&str> = blocks
+                .iter()
+                .filter_map(|b| {
+                    if b.get("type").and_then(|t| t.as_str()) == Some("text") {
+                        b.get("text").and_then(|t| t.as_str())
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+            return parts.join("\n");
+        }
+    }
+    String::new()
+}
+
 /// Set OpenInference request attributes on the root span from raw JSON.
 ///
 /// Extracts model, messages, tools, and invocation parameters from the
@@ -33,10 +60,16 @@ pub fn set_request_attributes(span: &Span, req: &serde_json::Value) {
         set_str(span, "llm.model_name", model);
     }
 
-    // input.value = JSON string of messages array
-    if let Some(messages) = req.get("messages") {
-        if let Ok(messages_json) = serde_json::to_string(messages) {
-            set_str(span, "input.value", messages_json);
+    // input.value = text content of the last user message (the actual prompt).
+    // Using clean text instead of raw JSON avoids tool_result XML noise in Phoenix.
+    if let Some(messages) = req.get("messages").and_then(|v| v.as_array()) {
+        if let Some(last_user) = messages.iter().rev().find(|m| {
+            m.get("role").and_then(|v| v.as_str()) == Some("user")
+        }) {
+            let input_text = extract_message_text(last_user);
+            if !input_text.is_empty() {
+                set_str(span, "input.value", input_text);
+            }
         }
     }
 
@@ -310,17 +343,12 @@ fn set_nonstreaming_response_attributes(span: &Span, response_bytes: &[u8]) {
         }
     };
 
-    // output.value = full response body string
-    if let Ok(body_str) = std::str::from_utf8(response_bytes) {
-        set_str(span, "output.value", body_str);
-    }
-
     // Role
     if let Some(role) = body.get("role").and_then(|v| v.as_str()) {
         set_str(span, "llm.output_messages.0.message.role", role);
     }
 
-    // Content blocks
+    // Content blocks — extract text and tool_use separately
     if let Some(content_arr) = body.get("content").and_then(|v| v.as_array()) {
         let mut text_parts = Vec::new();
         let mut tool_idx: usize = 0;
@@ -351,11 +379,10 @@ fn set_nonstreaming_response_attributes(span: &Span, response_bytes: &[u8]) {
         }
 
         if !text_parts.is_empty() {
-            set_str(
-                span,
-                "llm.output_messages.0.message.content",
-                text_parts.join(""),
-            );
+            let joined = text_parts.join("");
+            set_str(span, "llm.output_messages.0.message.content", &joined);
+            // output.value = clean text content, not raw JSON body
+            set_str(span, "output.value", joined);
         }
     }
 
@@ -493,8 +520,9 @@ fn set_streaming_response_attributes(span: &Span, response_bytes: &[u8]) {
         }
     }
 
-    // Set span attributes from accumulated state
-    set_str(span, "output.value", body_str);
+    // Set span attributes from accumulated state.
+    // Use the reassembled text content (not the raw SSE body) for output.value
+    // so Phoenix displays clean text instead of SSE event chunks.
 
     if let Some(r) = role {
         set_str(span, "llm.output_messages.0.message.role", r);
@@ -531,11 +559,9 @@ fn set_streaming_response_attributes(span: &Span, response_bytes: &[u8]) {
     }
 
     if !text_parts.is_empty() {
-        set_str(
-            span,
-            "llm.output_messages.0.message.content",
-            text_parts.join(""),
-        );
+        let joined = text_parts.join("");
+        set_str(span, "llm.output_messages.0.message.content", &joined);
+        set_str(span, "output.value", joined);
     }
 
     if let Some(it) = input_tokens {

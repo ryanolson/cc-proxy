@@ -99,9 +99,17 @@ fn try_init_with_otlp(
             .build()?,
     };
 
-    // Build tracer provider with batch exporter
+    // Build tracer provider with batch exporter.
+    // Raise max_attributes_per_span from the default 128 — Claude Code
+    // conversations have many messages and tools that each become separate
+    // OTel attributes via OpenInference.
+    let span_limits = opentelemetry_sdk::trace::SpanLimits {
+        max_attributes_per_span: 1024,
+        ..Default::default()
+    };
     let provider = SdkTracerProvider::builder()
         .with_batch_exporter(otlp_exporter)
+        .with_span_limits(span_limits)
         .with_resource(
             opentelemetry_sdk::Resource::builder_empty()
                 .with_service_name(config.service_name.clone())
